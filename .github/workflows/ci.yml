@@ -83,6 +83,11 @@ jobs:
             exit $CODE
           fi
 
+          # Wrangler may leave the workerd child alive after the npm wrapper exits.
+          # CI runners are isolated, so clean it before starting the next local Worker.
+          pkill -f workerd >/dev/null 2>&1 || true
+          pkill -f "wrangler dev" >/dev/null 2>&1 || true
+          sleep 1
 
       - name: Live generated Child Web smoke
         run: |
