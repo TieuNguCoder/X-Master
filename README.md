@@ -53,6 +53,18 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — DONE
 - Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
 
+## v0.2.5 Content formatting
+
+AI rewriting now follows strict per-account content templates across all three providers:
+
+- **Airdrop / Standard:** compact opportunity layout with project hook, reward only when stated, visible link, short action steps, and 2–4 hashtags;
+- **Airdrop / Premium:** polished structured opportunity post with reward/eligibility/deadline fields only when present, clearer steps, CTA, and hashtags;
+- **News / Standard:** headline + concise context + URL when present + 2–4 hashtags instead of a dry one-line rewrite;
+- **News / Premium:** editorial mini-brief with stronger structure, supported context/why-it-matters, cleaner spacing, and hashtags;
+- source URLs are explicitly preserved;
+- a postprocessor guarantees at least two hashtags even when the AI omits them;
+- Master and Child account cards show the selected format and Standard vs Premium/Blue state.
+
 ## v0.2.4 AI provider routing
 
 Each X account can now choose one AI provider independently:
