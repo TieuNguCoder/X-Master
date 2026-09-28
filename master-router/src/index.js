@@ -319,10 +319,59 @@ function rewritePrompt(text, account) {
   };
 }
 
-function cleanAiOutput(output, maxChars) {
+function fallbackHashtags(sourceText, account) {
+  const sourceTags = String(sourceText || "").match(/#[\p{L}\p{N}_]+/gu) || [];
+  const picked = [];
+  for (const tag of sourceTags) {
+    if (!picked.some((x) => x.toLowerCase() === tag.toLowerCase())) picked.push(tag);
+    if (picked.length >= 4) break;
+  }
+
+  const lower = String(sourceText || "").toLowerCase();
+  const candidates = account.content_mode === "airdrop"
+    ? ["#Airdrop", "#Web3"]
+    : [
+        ...(lower.includes("bitcoin") || /\bbtc\b/.test(lower) ? ["#Bitcoin"] : []),
+        ...(lower.includes("ethereum") || /\beth\b/.test(lower) ? ["#Ethereum"] : []),
+        ...(lower.includes("crypto") ? ["#Crypto"] : []),
+        ...(lower.includes("web3") ? ["#Web3"] : []),
+        ...(lower.includes("artificial intelligence") || /\bai\b/.test(lower) ? ["#AI"] : []),
+        "#News",
+        "#Update"
+      ];
+
+  for (const tag of candidates) {
+    if (!picked.some((x) => x.toLowerCase() === tag.toLowerCase())) picked.push(tag);
+    if (picked.length >= 2) break;
+  }
+  return picked.slice(0, 4);
+}
+
+function cleanAiOutput(output, maxChars, sourceText, account) {
   let text = String(output || "").trim().replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
   if (!text) throw Object.assign(new Error("ai:empty_response"), { status: 502, expose: true });
-  if (text.length > maxChars) text = text.slice(0, Math.max(1, maxChars - 1)).trimEnd() + "…";
+
+  const existingTags = text.match(/#[\p{L}\p{N}_]+/gu) || [];
+  if (existingTags.length < 2) {
+    const extra = fallbackHashtags(sourceText, account)
+      .filter((tag) => !existingTags.some((x) => x.toLowerCase() === tag.toLowerCase()))
+      .slice(0, Math.max(0, 2 - existingTags.length));
+    if (extra.length) text = text.replace(/\s+$/g, "") + "\n\n" + extra.join(" ");
+  }
+
+  if (text.length > maxChars) {
+    const tags = text.match(/#[\p{L}\p{N}_]+/gu) || fallbackHashtags(sourceText, account);
+    const tagLine = tags.slice(-4).join(" ");
+    const room = Math.max(40, maxChars - tagLine.length - 3);
+    let body = text.replace(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu, "").trim();
+    if (body.length > room) {
+      body = body.slice(0, room - 1).trimEnd();
+      const lastSpace = body.lastIndexOf(" ");
+      if (lastSpace > room * 0.72) body = body.slice(0, lastSpace);
+      body += "…";
+    }
+    text = body + "\n\n" + tagLine;
+  }
   return text;
 }
 
@@ -358,7 +407,7 @@ async function geminiRewrite(apiKey, text, account, model = "gemini-3.5-flash") 
   const output = (body?.candidates?.[0]?.content?.parts || [])
     .map((part) => String(part?.text || ""))
     .join("");
-  return cleanAiOutput(output, maxChars);
+  return cleanAiOutput(output, maxChars, text, account);
 }
 
 async function deepseekRewrite(apiKey, text, account) {
@@ -385,7 +434,7 @@ async function deepseekRewrite(apiKey, text, account) {
     const detail = body?.error?.message || body?.message || ("HTTP " + response.status);
     throw Object.assign(new Error("deepseek:" + detail), { status: 502, expose: true });
   }
-  return cleanAiOutput(body?.choices?.[0]?.message?.content, maxChars);
+  return cleanAiOutput(body?.choices?.[0]?.message?.content, maxChars, text, account);
 }
 
 function accountAiProvider(secrets) {
