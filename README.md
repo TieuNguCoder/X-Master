@@ -53,6 +53,17 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — DONE
 - Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
 
+## v0.2.2 Collector routing diagnostics
+
+This release fixes the silent-no-reaction path found during live testing:
+
+- Collector no longer silently drops a newly assigned Telegram channel because its in-memory Source cache is stale;
+- on a Source-cache miss, Collector refreshes assignments immediately and re-checks the message;
+- background Source refresh is shortened to 15 seconds;
+- Collector logs explicit `CAPTURED`, `ROUTED`, `SKIPPED`, and `FAILED` stages;
+- the Windows app records the Collector runtime version and restarts an old Collector automatically after a Master update;
+- Master Web now has a direct `Test đăng X` button for each X account, allowing Buffer → X to be tested independently of Telegram and Child Web code.
+
 ## v0.2.1 Posting pipeline hotfix
 
 This release completes the missing posting path:
