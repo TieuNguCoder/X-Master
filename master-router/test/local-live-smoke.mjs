@@ -30,24 +30,29 @@ r = await call("/api/admin/login", {
 assert.equal(r.response.status, 200);
 assert.ok(cookie.startsWith("xm_admin="));
 
-r = await call("/api/admin/sources", {
+r = await call("/collector/catalog", {
   method: "POST",
-  body: JSON.stringify({ title: "Smoke Source", username: "smoke_source", channel_id: "-1001234567890" })
+  headers: { "x-collector-secret": "collector-smoke-secret" },
+  body: JSON.stringify({
+    sources: [
+      { title: "Smoke Source", username: "smoke_source", channel_id: "-1001234567890" },
+      { title: "Second Source", username: "second_source", channel_id: "-1009876543210" }
+    ]
+  })
 });
-assert.equal(r.response.status, 201);
-const sourceId = r.body.source.id;
-assert.ok(sourceId);
+assert.equal(r.response.status, 200);
+assert.equal(r.body.synced, 2);
 
 r = await call("/api/admin/dashboard");
 assert.equal(r.response.status, 200);
-assert.equal(r.body.sources.length, 1);
+assert.equal(r.body.sources.length, 2);
 assert.equal(r.body.children.length, 0);
 
 r = await call("/collector/sources", {
   headers: { "x-collector-secret": "collector-smoke-secret" }
 });
 assert.equal(r.response.status, 200);
-assert.equal(r.body.sources.length, 1);
+assert.equal(r.body.sources.length, 0, "no X account has selected a source yet");
 
 const ingestBody = {
   source: { channel_id: "-1001234567890", username: "smoke_source" },
@@ -62,7 +67,8 @@ r = await call("/ingest", {
 });
 assert.equal(r.response.status, 202);
 assert.equal(r.body.accepted, true);
-assert.equal(r.body.routed_children.length, 0);
+assert.equal(r.body.routed_children, 0);
+assert.equal(r.body.routed_accounts.length, 0);
 
 r = await call("/ingest", {
   method: "POST",
