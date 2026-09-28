@@ -129,3 +129,51 @@ WHERE external_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_ingest_created
 ON ingest_events(created_at DESC);
+
+
+-- v0.2 multi-account model: each Child Web can manage up to 5 X accounts.
+CREATE TABLE IF NOT EXISTS x_accounts (
+  id TEXT PRIMARY KEY,
+  child_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  x_handle TEXT,
+  encrypted_json TEXT,
+  buffer_channel_id TEXT,
+  buffer_channel_name TEXT,
+  content_mode TEXT NOT NULL DEFAULT 'news'
+    CHECK(content_mode IN ('news','airdrop')),
+  x_premium INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(child_id) REFERENCES children(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_x_accounts_child
+ON x_accounts(child_id, created_at);
+
+CREATE TABLE IF NOT EXISTS x_account_sources (
+  account_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(account_id, source_id),
+  FOREIGN KEY(account_id) REFERENCES x_accounts(id) ON DELETE CASCADE,
+  FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_x_account_sources_source
+ON x_account_sources(source_id, account_id);
+
+CREATE TABLE IF NOT EXISTS ingest_account_routes (
+  event_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'accepted',
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(event_id, account_id),
+  FOREIGN KEY(event_id) REFERENCES ingest_events(id) ON DELETE CASCADE,
+  FOREIGN KEY(account_id) REFERENCES x_accounts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_account_routes_account
+ON ingest_account_routes(account_id, created_at DESC);
