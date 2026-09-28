@@ -935,7 +935,7 @@ async function handleApi(request, env) {
       return json(await saveXAccount(env, child, await readJson(request)), 201);
     }
 
-    const accountMatch = path.match(/^\\/internal\\/child\\/accounts\\/([^/]+)$/);
+    const accountMatch = path.match(/^\/internal\/child\/accounts\/([^/]+)$/);
     if (accountMatch && request.method === "PATCH") {
       return json(await saveXAccount(env, child, await readJson(request), accountMatch[1]));
     }
