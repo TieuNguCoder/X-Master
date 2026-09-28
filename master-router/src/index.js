@@ -219,7 +219,7 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
 
   const metadata = {
     main_module: "worker.js",
-    compatibility_date: "2026-09-28",
+    compatibility_date: "2026-09-18",
     bindings: [
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
