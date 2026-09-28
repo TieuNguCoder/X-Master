@@ -786,8 +786,6 @@ async function ingestEvent(env, request) {
 }
 
 async function handleApi(request, env) {
-
-async function handleApi(request, env) {
   await requireBindings(env);
   const url = new URL(request.url);
   const path = url.pathname;
