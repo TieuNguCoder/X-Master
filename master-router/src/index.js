@@ -170,6 +170,64 @@ async function cloudflareRequest(infra, path, init = {}) {
   return body;
 }
 
+async function bufferGraphql(apiKey, query) {
+  const response = await fetch("https://api.buffer.com", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: "Bearer " + apiKey
+    },
+    body: JSON.stringify({ query })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || Array.isArray(body.errors)) {
+    const detail = (body.errors || []).map((x) => x.message || String(x)).join("; ") || ("HTTP " + response.status);
+    throw Object.assign(new Error("buffer:" + detail), { status: 502, expose: true });
+  }
+  return body.data || {};
+}
+
+async function bufferXChannels(apiKey) {
+  const key = String(apiKey || "").trim();
+  if (key.length < 10) throw Object.assign(new Error("buffer_api_key_required"), { status: 400 });
+
+  const orgData = await bufferGraphql(key, `query {
+    account {
+      organizations { id name }
+    }
+  }`);
+  const organizations = orgData?.account?.organizations || [];
+  const channels = [];
+
+  for (const org of organizations) {
+    const orgId = String(org.id || "").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    const channelData = await bufferGraphql(key, `query {
+      channels(input: { organizationId: "${orgId}" }) {
+        id
+        name
+        displayName
+        service
+        isQueuePaused
+      }
+    }`);
+    for (const channel of (channelData.channels || [])) {
+      const service = String(channel.service || "").toLowerCase();
+      if (service === "twitter" || service === "x") {
+        channels.push({
+          id: channel.id,
+          name: channel.name || channel.displayName || channel.id,
+          display_name: channel.displayName || channel.name || null,
+          service: channel.service,
+          organization_id: org.id,
+          organization_name: org.name || null,
+          queue_paused: Boolean(channel.isQueuePaused)
+        });
+      }
+    }
+  }
+  return channels;
+}
+
 async function preflightInfra(infra) {
   const checks = [];
 
@@ -927,6 +985,11 @@ async function handleApi(request, env) {
 
     if (path === "/internal/child/me" && request.method === "GET") {
       return json(await childMe(env, child));
+    }
+
+    if (path === "/internal/child/buffer/channels" && request.method === "POST") {
+      const body = await readJson(request);
+      return json({ channels: await bufferXChannels(body.buffer_api_key) });
     }
 
     if (path === "/internal/child/accounts" && request.method === "POST") {
