@@ -1060,7 +1060,7 @@ async function handleApi(request, env, ctx) {
     return json({
       ok: database,
       service: "x-master-router",
-      version: "0.2.1",
+      version: "0.2.2",
       database,
       architecture: "master-router-child-web",
       collector_ready: Boolean(env.COLLECTOR_SECRET)
