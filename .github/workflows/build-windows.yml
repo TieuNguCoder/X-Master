@@ -1,0 +1,140 @@
+name: Build X-Master Windows
+
+permissions:
+  contents: write
+
+on:
+  push:
+    paths:
+      - 'desktop/**'
+      - 'deploy/**'
+      - 'master-router/**'
+      - 'requirements.txt'
+      - 'VERSION'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Router dependencies
+        shell: pwsh
+        run: |
+          Push-Location master-router
+          npm install
+          npm run check
+          node test/security.test.mjs
+          node test/contract.test.mjs
+          Pop-Location
+          node tools/render-child-worker.mjs
+          node --check .tmp-child-worker.mjs
+
+      - name: Validate PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "deploy/SETUP-MASTER.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
+            exit 1
+          }
+
+      - name: Install bundled Wrangler
+        shell: pwsh
+        run: |
+          npm install --prefix runtime/wrangler wrangler@4.131.2 --no-audit --no-fund
+          if (-not (Test-Path runtime/wrangler/node_modules/wrangler/bin/wrangler.js)) {
+            throw "Bundled Wrangler missing"
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Python build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pyinstaller
+          python -m pip install -r requirements.txt
+          python -m py_compile desktop/x_master.py
+
+      - name: Build X-Master.exe
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name X-Master --collect-all telethon desktop/x_master.py
+
+      - name: Assemble portable package
+        shell: pwsh
+        run: |
+          $release = "release/X-Master-v0.1.0"
+          New-Item -ItemType Directory -Force $release | Out-Null
+          Copy-Item dist/X-Master.exe $release/
+          Copy-Item deploy $release/deploy -Recurse
+          Copy-Item master-router $release/master-router -Recurse
+          Remove-Item $release/master-router/node_modules -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $release/master-router/wrangler.jsonc -Force -ErrorAction SilentlyContinue
+          Copy-Item VERSION $release/VERSION
+          Copy-Item README.md $release/README.md
+
+          $nodeExe = (Get-Command node).Source
+          $nodeDir = Split-Path $nodeExe -Parent
+          New-Item -ItemType Directory -Force "$release/runtime/node" | Out-Null
+          Copy-Item (Join-Path $nodeDir '*') "$release/runtime/node" -Recurse -Force
+          Copy-Item runtime/wrangler "$release/runtime/wrangler" -Recurse -Force
+
+          if (-not (Test-Path "$release/runtime/node/node.exe")) { throw "Bundled node.exe missing" }
+          if (-not (Test-Path "$release/runtime/wrangler/node_modules/wrangler/bin/wrangler.js")) { throw "Bundled wrangler.js missing" }
+
+      - name: Run packaged EXE self-test
+        shell: pwsh
+        run: |
+          Push-Location release/X-Master-v0.1.0
+          .\X-Master.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "X-Master self-test failed" }
+          Pop-Location
+
+      - name: ZIP and extraction integrity test
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release/X-Master-v0.1.0/* -DestinationPath release/X-Master-v0.1.0-Windows.zip -CompressionLevel Optimal -Force
+          New-Item -ItemType Directory -Force release/verify | Out-Null
+          Expand-Archive release/X-Master-v0.1.0-Windows.zip release/verify -Force
+          if (-not (Test-Path release/verify/X-Master.exe)) { throw "ZIP missing X-Master.exe" }
+          if (-not (Test-Path release/verify/deploy/SETUP-MASTER.ps1)) { throw "ZIP missing deploy script" }
+          if (-not (Test-Path release/verify/master-router/web/index.html)) { throw "ZIP missing Master Web" }
+          Get-FileHash release/X-Master-v0.1.0-Windows.zip -Algorithm SHA256
+
+      - name: Upload branch package
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: X-Master-v0.1.0-Windows
+          path: release/X-Master-v0.1.0-Windows.zip
+          if-no-files-found: error
+
+      - name: Publish v0.1.0 release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "x-master-v0.1.0"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "X-Master v0.1.0" --notes "Master Router foundation: one Owner web, central Sources, isolated password-protected Child Web deployment, encrypted infrastructure secrets, and local Telegram Collector."
+            if ($LASTEXITCODE -ne 0) { throw "Could not create release" }
+          }
+          gh release upload $tag release/X-Master-v0.1.0-Windows.zip --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset" }
