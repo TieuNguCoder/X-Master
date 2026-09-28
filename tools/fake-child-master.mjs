@@ -1,6 +1,11 @@
 import http from "node:http";
 
 const port = Number(process.env.FAKE_MASTER_PORT || 8800);
+const sourceCatalog = [
+  { id: "src_smoke", title: "Smoke Source", username: "smoke_source", channel_id: "-100123" },
+  { id: "src_second", title: "Second Source", username: "second_source", channel_id: "-100456" }
+];
+let accounts = [];
 
 function json(res, body, status = 200, headers = {}) {
   res.writeHead(status, { "content-type": "application/json", ...headers });
@@ -33,22 +38,63 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/internal/child/me" && req.method === "GET") {
     return json(res, {
       child: { id: "ch_smoke", name: "Tester Smoke", status: "ready" },
-      sources: [{ id: "src_smoke", title: "Smoke Source", username: "smoke_source" }],
-      settings: {
-        content_mode: "news",
-        x_premium: false,
-        gemini_configured: false,
-        buffer_configured: false
-      }
+      source_catalog: sourceCatalog,
+      accounts,
+      limits: { max_accounts: 5 }
     });
   }
 
-  if (req.url === "/internal/child/settings" && req.method === "PUT") {
+  if (req.url === "/internal/child/accounts" && req.method === "POST") {
     const body = JSON.parse(raw || "{}");
-    if (body.gemini_api_key !== "gemini-smoke" || body.buffer_api_key !== "buffer-smoke") {
-      return json(res, { error: "bad_payload" }, 400);
-    }
-    return json(res, { saved: true });
+    if (accounts.length >= 5) return json(res, { error: "x_account_limit_reached" }, 409);
+    const selected = sourceCatalog.filter((s) => (body.source_ids || []).includes(s.id));
+    const account = {
+      id: "xa_" + (accounts.length + 1),
+      display_name: body.display_name,
+      x_handle: String(body.x_handle || "").replace(/^@/, ""),
+      buffer_channel_id: body.buffer_channel_id || null,
+      buffer_channel_name: body.buffer_channel_name || null,
+      content_mode: body.content_mode || "news",
+      x_premium: Boolean(body.x_premium),
+      enabled: body.enabled !== false,
+      gemini_configured: Boolean(body.gemini_api_key),
+      buffer_configured: Boolean(body.buffer_api_key),
+      source_ids: selected.map((s) => s.id),
+      sources: selected
+    };
+    accounts.push(account);
+    return json(res, { account }, 201);
+  }
+
+  const match = req.url.match(/^\/internal\/child\/accounts\/([^/]+)$/);
+  if (match && req.method === "PATCH") {
+    const body = JSON.parse(raw || "{}");
+    const index = accounts.findIndex((a) => a.id === match[1]);
+    if (index < 0) return json(res, { error: "x_account_not_found" }, 404);
+    const old = accounts[index];
+    const selected = sourceCatalog.filter((s) => (body.source_ids || []).includes(s.id));
+    accounts[index] = {
+      ...old,
+      display_name: body.display_name,
+      x_handle: String(body.x_handle || "").replace(/^@/, ""),
+      buffer_channel_id: body.buffer_channel_id || null,
+      buffer_channel_name: body.buffer_channel_name || null,
+      content_mode: body.content_mode || "news",
+      x_premium: Boolean(body.x_premium),
+      enabled: body.enabled !== false,
+      gemini_configured: Boolean(body.gemini_api_key) || old.gemini_configured,
+      buffer_configured: Boolean(body.buffer_api_key) || old.buffer_configured,
+      source_ids: selected.map((s) => s.id),
+      sources: selected
+    };
+    return json(res, { account: accounts[index] });
+  }
+
+  if (match && req.method === "DELETE") {
+    const before = accounts.length;
+    accounts = accounts.filter((a) => a.id !== match[1]);
+    if (accounts.length === before) return json(res, { error: "x_account_not_found" }, 404);
+    return json(res, { deleted: true });
   }
 
   return json(res, { error: "not_found" }, 404);
