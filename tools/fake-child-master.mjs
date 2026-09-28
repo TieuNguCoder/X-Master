@@ -16,6 +16,10 @@ const server = http.createServer(async (req, res) => {
     return json(res, { error: "unauthorized" }, 401);
   }
 
+  if (req.url === "/internal/child/health" && req.method === "GET") {
+    return json(res, { ok: true, child_id: "ch_smoke", status: "ready" });
+  }
+
   if (req.url === "/internal/child/login" && req.method === "POST") {
     const body = JSON.parse(raw || "{}");
     if (body.password !== "tester-password") return json(res, { error: "invalid_credentials" }, 401);
