@@ -866,7 +866,7 @@ async function deleteChild(env, admin, childId) {
   return { deleted: true };
 }
 
-async function adminTestXAccount(env, admin, accountId) {
+async function loadAccountSecrets(env, accountId) {
   const account = await env.DB.prepare(
     "SELECT a.*,c.id AS child_id,c.name AS child_name FROM x_accounts a JOIN children c ON c.id=a.child_id WHERE a.id=?"
   ).bind(accountId).first();
@@ -876,6 +876,42 @@ async function adminTestXAccount(env, admin, accountId) {
   if (account.encrypted_json) {
     secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
   }
+  return { account, secrets };
+}
+
+async function adminTestGemini(env, admin, accountId) {
+  const { account, secrets } = await loadAccountSecrets(env, accountId);
+  const output = await geminiRewrite(
+    secrets.gemini_api_key,
+    "X-Master Gemini connection test. Rewrite this into a short X post.",
+    account
+  );
+  await audit(env, "admin", admin.id, "x_account.gemini_test_ok", "x_account", account.id, {
+    child_id: account.child_id,
+    output
+  });
+  return { ok: true, output };
+}
+
+async function adminTestFullPipeline(env, admin, accountId) {
+  const { account, secrets } = await loadAccountSecrets(env, accountId);
+  const output = await geminiRewrite(
+    secrets.gemini_api_key,
+    "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
+    account
+  );
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
+  await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
+    child_id: account.child_id,
+    buffer_post_id: post.id,
+    buffer_status: post.status || null,
+    output
+  });
+  return { ok: true, output, post: { id: post.id, status: post.status || null } };
+}
+
+async function adminTestXAccount(env, admin, accountId) {
+  const { account, secrets } = await loadAccountSecrets(env, accountId);
 
   const text = "X-Master connection test " + new Date().toISOString();
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
@@ -1142,6 +1178,16 @@ async function handleApi(request, env, ctx) {
     }
     if (childMatch && request.method === "DELETE") {
       return json(await deleteChild(env, admin, childMatch[1]));
+    }
+
+    const adminGeminiMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)\/test-gemini$/);
+    if (adminGeminiMatch && request.method === "POST") {
+      return json(await adminTestGemini(env, admin, adminGeminiMatch[1]));
+    }
+
+    const adminPipelineMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)\/test-pipeline$/);
+    if (adminPipelineMatch && request.method === "POST") {
+      return json(await adminTestFullPipeline(env, admin, adminPipelineMatch[1]));
     }
 
     const adminTestMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)\/test-post$/);
