@@ -37,7 +37,7 @@ function renderChildren(){
       return '<div class="row" style="align-items:flex-start"><div class="row-main"><strong>'+esc(a.display_name)+'</strong>'+
         (a.x_handle?' · @'+esc(a.x_handle):'')+'<br><small>'+(a.enabled?'RUNNING':'PAUSED')+' · Buffer '+(a.buffer_configured?'OK':'-')+
         ' · Gemini '+(a.gemini_configured?'OK':'-')+'</small><div style="margin-top:4px"><small>Last post: '+esc(a.last_post_status||'none')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</small></div><div style="margin-top:6px">'+(channels||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
-        '<div class="actions" style="margin-top:8px"><button class="test-account secondary" data-id="'+esc(a.id)+'">Test đăng X</button></div></div></div>';
+        '<div class="actions" style="margin-top:8px"><button class="test-gemini secondary" data-id="'+esc(a.id)+'">Test Gemini</button><button class="test-pipeline secondary" data-id="'+esc(a.id)+'">Test full pipeline</button><button class="test-account secondary" data-id="'+esc(a.id)+'">Test đăng X</button></div></div></div>';
     }).join("");
     return '<div class="child-card"><div class="child-head"><div><h3>'+esc(c.name)+'</h3><small>'+esc(c.slug)+'</small></div><span class="badge '+statusClass+'">'+esc(c.status.toUpperCase())+'</span></div>'+
       '<div class="meta"><span>X accounts: '+Number(c.account_count||0)+'/5</span><span>Telegram channels: '+Number(c.source_count||0)+'</span><span>Web: '+(c.web_url?'<a href="'+esc(c.web_url)+'" target="_blank" rel="noreferrer">'+esc(c.web_url)+'</a>':'-')+'</span></div>'+
@@ -47,6 +47,8 @@ function renderChildren(){
       '<button class="toggle-child warn" data-id="'+esc(c.id)+'" data-status="'+esc(c.status)+'">'+(c.status==="paused"?"Resume":"Pause")+'</button>'+
       '<button class="delete-child danger" data-id="'+esc(c.id)+'">Delete</button></div></div>';
   }).join("")||'<div class="muted">Chưa có Child Web.</div>';
+  document.querySelectorAll(".test-gemini").forEach((b)=>b.onclick=()=>testGemini(b.dataset.id));
+  document.querySelectorAll(".test-pipeline").forEach((b)=>b.onclick=()=>testPipeline(b.dataset.id));
   document.querySelectorAll(".test-account").forEach((b)=>b.onclick=()=>testAccountPost(b.dataset.id));
   document.querySelectorAll(".open-child").forEach((b)=>b.onclick=()=>window.open(b.dataset.url,"_blank"));
   document.querySelectorAll(".reset-pass").forEach((b)=>b.onclick=()=>resetPassword(b.dataset.id));
@@ -77,6 +79,20 @@ $("#preflightBtn").onclick=async()=>{$("#deployStatus").textContent="Đang test 
 $("#childForm").onsubmit=async(e)=>{e.preventDefault();const password=$("#childPassword").value;if(password.length<8)return toast("Password tối thiểu 8 ký tự.");$("#deployStatus").textContent="Đang validate → deploy → health check...";[...e.target.querySelectorAll("button")].forEach((b)=>b.disabled=true);try{const result=await api("/api/admin/children",{method:"POST",body:JSON.stringify(childPayload(true))});$("#deployStatus").textContent="READY: "+result.child.web_url;$("#shareText").value="Web: "+result.child.web_url+"\nPassword: "+password;$("#shareCard").classList.remove("hidden");$("#childPassword").value="";$("#cfToken").value="";$("#cloudSecret").value="";await refresh();}catch(error){$("#deployStatus").textContent="DEPLOY FAILED (đã rollback): "+error.message;}finally{[...e.target.querySelectorAll("button")].forEach((b)=>b.disabled=false);}};
 $("#copyShareBtn").onclick=async()=>{await navigator.clipboard.writeText($("#shareText").value);toast("Đã copy thông tin tester.");};
 
+async function testGemini(id){
+  try{
+    const result=await api("/api/admin/accounts/"+encodeURIComponent(id)+"/test-gemini",{method:"POST",body:"{}"});
+    toast("Gemini OK: "+(result.output||"").slice(0,140));
+  }catch(error){toast("Gemini lỗi: "+error.message);}
+}
+async function testPipeline(id){
+  if(!confirm("Test Gemini → Buffer → X và đăng một bài test thật?"))return;
+  try{
+    const result=await api("/api/admin/accounts/"+encodeURIComponent(id)+"/test-pipeline",{method:"POST",body:"{}"});
+    toast("Full pipeline OK · Buffer post: "+(result.post?.id||"-")+" · "+(result.post?.status||"-"));
+    await refresh();
+  }catch(error){toast("Full pipeline lỗi: "+error.message);}
+}
 async function testAccountPost(id){
   if(!confirm("Gửi 1 bài test ngay lên X qua Buffer?"))return;
   try{
@@ -88,6 +104,21 @@ async function testAccountPost(id){
 async function resetPassword(id){const password=prompt("Password mới (tối thiểu 8 ký tự):");if(!password)return;try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({password})});toast("Đã đổi password. Session tester cũ đã bị revoke.");}catch(error){toast(error.message);}}
 async function toggleChild(id,status){const next=status==="paused"?"ready":"paused";try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({status:next})});await refresh();}catch(error){toast(error.message);}}
 async function deleteChild(id){if(!confirm("Xóa Child Web này khỏi Cloudflare và X-Master?"))return;try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"DELETE"});await refresh();}catch(error){toast(error.message);}}
-async function loadAudit(){try{const result=await api("/api/admin/audit");$("#auditList").innerHTML=(result.audit_logs||[]).map((a)=>'<div class="row"><div class="row-main"><strong>'+esc(a.action)+'</strong><br><small>'+esc(a.created_at)+' · '+esc(a.actor_type)+(a.target_id?' · '+esc(a.target_id):'')+'</small></div></div>').join("")||'<div class="muted">Chưa có log.</div>';}catch(error){toast(error.message);}}
+async function loadAudit(){
+  try{
+    const result=await api("/api/admin/audit");
+    $("#auditList").innerHTML=(result.audit_logs||[]).map((a)=>{
+      let details="";
+      if(a.details_json){
+        try{
+          const d=JSON.parse(a.details_json);
+          const important=d.error||d.output||d.buffer_status||d.buffer_post_id;
+          details=important?'<div style="margin-top:6px"><small>'+esc(String(important))+'</small></div>':'<div style="margin-top:6px"><small>'+esc(JSON.stringify(d))+'</small></div>';
+        }catch{details='<div style="margin-top:6px"><small>'+esc(a.details_json)+'</small></div>';}
+      }
+      return '<div class="row"><div class="row-main"><strong>'+esc(a.action)+'</strong><br><small>'+esc(a.created_at)+' · '+esc(a.actor_type)+(a.target_id?' · '+esc(a.target_id):'')+'</small>'+details+'</div></div>';
+    }).join("")||'<div class="muted">Chưa có log.</div>';
+  }catch(error){toast(error.message);}
+}
 
 health();refresh().catch(()=>showLogin());
