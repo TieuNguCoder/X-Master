@@ -525,6 +525,9 @@ async function listXAccounts(env, childId) {
       }
     }
     const sources = await accountSources(env, row.id);
+    const lastRoute = await env.DB.prepare(
+      "SELECT status,error,created_at FROM ingest_account_routes WHERE account_id=? ORDER BY created_at DESC LIMIT 1"
+    ).bind(row.id).first();
     accounts.push({
       id: row.id,
       child_id: row.child_id,
@@ -538,6 +541,9 @@ async function listXAccounts(env, childId) {
       gemini_configured: geminiConfigured,
       buffer_configured: bufferConfigured,
       settings_corrupt: settingsCorrupt,
+      last_post_status: lastRoute?.status || null,
+      last_post_error: lastRoute?.error || null,
+      last_post_at: lastRoute?.created_at || null,
       sources,
       source_ids: sources.map((s) => s.id),
       created_at: row.created_at,
@@ -683,6 +689,25 @@ async function saveXAccount(env, child, body, accountId = null) {
   return {
     account: (await listXAccounts(env, child.id)).find((a) => a.id === finalId)
   };
+}
+
+async function testXAccount(env, child, accountId) {
+  const account = await env.DB.prepare(
+    "SELECT * FROM x_accounts WHERE id=? AND child_id=?"
+  ).bind(accountId, child.id).first();
+  if (!account) throw Object.assign(new Error("x_account_not_found"), { status: 404 });
+
+  let secrets = {};
+  if (account.encrypted_json) {
+    secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
+  }
+  const text = "X-Master connection test " + new Date().toISOString();
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
+  await audit(env, "child", child.id, "x_account.test_posted", "x_account", account.id, {
+    buffer_post_id: post.id,
+    buffer_status: post.status || null
+  });
+  return { posted: true, post: { id: post.id, status: post.status || null } };
 }
 
 async function deleteXAccount(env, child, accountId) {
@@ -1133,6 +1158,11 @@ async function handleApi(request, env, ctx) {
 
     if (path === "/internal/child/accounts" && request.method === "POST") {
       return json(await saveXAccount(env, child, await readJson(request)), 201);
+    }
+
+    const testPostMatch = path.match(/^\/internal\/child\/accounts\/([^/]+)\/test-post$/);
+    if (testPostMatch && request.method === "POST") {
+      return json(await testXAccount(env, child, testPostMatch[1]));
     }
 
     const accountMatch = path.match(/^\/internal\/child\/accounts\/([^/]+)$/);
