@@ -228,27 +228,94 @@ async function bufferXChannels(apiKey) {
   return channels;
 }
 
+function extractSourceUrls(text) {
+  return String(text || "").match(/https?:\/\/[^\s<>()]+/g) || [];
+}
+
 function rewritePrompt(text, account) {
   const sourceText = String(text || "").trim();
   if (!sourceText) throw Object.assign(new Error("empty_source_text"), { status: 400 });
-  const maxChars = account.x_premium ? 1800 : 260;
-  const modeGuide = account.content_mode === "airdrop"
-    ? "Style: concise crypto/airdrop update. Keep only facts present in the source. Never invent eligibility, rewards, dates, links, prices, or guarantees."
-    : "Style: concise news update. Keep only facts present in the source. Never invent facts, numbers, names, dates, links, quotes, or conclusions.";
+
+  const premium = Boolean(account.x_premium);
+  const mode = account.content_mode === "airdrop" ? "airdrop" : "news";
+  const maxChars = premium ? 1600 : 275;
+  const urls = extractSourceUrls(sourceText);
+
+  const universal = [
+    "You are rewriting a Telegram source post into a ready-to-publish X post.",
+    "Use ONLY facts present in SOURCE. Never invent rewards, amounts, token prices, dates, deadlines, eligibility, partnerships, quotes, statistics, links, or guarantees.",
+    "Preserve the source language unless the source is clearly mixed or a natural English rendering is required.",
+    "Do not mention Telegram, rewriting, AI, or the source.",
+    "Do not use markdown tables or code fences.",
+    "Keep every important URL from SOURCE exactly unchanged.",
+    "If SOURCE contains a URL, the final post MUST contain that URL.",
+    "End with 2 to 4 relevant hashtags. Hashtags must be natural and based on facts/topics actually present in SOURCE.",
+    "Avoid generic spam hashtags such as #FollowBack, #Giveaway, #FreeMoney unless SOURCE explicitly supports them.",
+    "Return ONLY the final X post, with no explanation.",
+    "Maximum " + maxChars + " characters."
+  ];
+
+  let formatRules = [];
+  if (mode === "airdrop" && !premium) {
+    formatRules = [
+      "CONTENT MODE: AIRDROP — STANDARD X ACCOUNT.",
+      "The result MUST visibly look like an airdrop/opportunity post, not a news sentence.",
+      "Use this compact structure whenever the SOURCE provides the needed facts:",
+      "1) First line: one strong emoji + project/opportunity name + short hook.",
+      "2) Second line: reward/benefit in a compact form ONLY if SOURCE states one.",
+      "3) Put the main URL on its own line or directly after a short label such as 🔗 Link:.",
+      "4) Then 1 to 3 very short action steps, each starting with •, →, or ✅.",
+      "5) Final line: 2 to 4 hashtags.",
+      "Use light crypto-style emojis such as 🎁 🚀 ✅ 🔗 🪂 only where natural.",
+      "Do not add a fake reward, fake deadline, fake eligibility, or fake token symbol.",
+      "Prefer useful density over prose. Make it easy to scan in under five seconds."
+    ];
+  } else if (mode === "airdrop" && premium) {
+    formatRules = [
+      "CONTENT MODE: AIRDROP — PREMIUM/BLUE X ACCOUNT.",
+      "Create a polished, structured opportunity post with stronger editorial quality.",
+      "Use this structure when facts exist:",
+      "1) Headline/hook with project name and opportunity.",
+      "2) A compact summary of what users can get or why the opportunity matters.",
+      "3) A clear block for Reward / Eligibility / Deadline ONLY for fields explicitly present in SOURCE.",
+      "4) Main URL clearly visible.",
+      "5) 2 to 5 numbered or bullet action steps.",
+      "6) One short CTA such as 'Check the details before joining' or an equivalent natural closing.",
+      "7) Final line: 2 to 4 relevant hashtags.",
+      "Use spacing and emojis to improve readability, but keep it professional rather than spammy."
+    ];
+  } else if (mode === "news" && !premium) {
+    formatRules = [
+      "CONTENT MODE: NEWS — STANDARD X ACCOUNT.",
+      "Do NOT write a dry one-sentence rewrite.",
+      "Use this compact structure:",
+      "1) First line: short headline/hook that states the key development.",
+      "2) Next 1 to 2 sentences: what happened and the most useful context available in SOURCE.",
+      "3) If SOURCE has an important URL, include it clearly.",
+      "4) Final line: 2 to 4 relevant hashtags.",
+      "Write in a natural social-news voice: clear, energetic, factual, not sensational."
+    ];
+  } else {
+    formatRules = [
+      "CONTENT MODE: NEWS — PREMIUM/BLUE X ACCOUNT.",
+      "Write a polished mini news brief suitable for a serious X account.",
+      "Use this structure:",
+      "1) Strong but factual headline/hook.",
+      "2) A concise summary of the development.",
+      "3) Add useful context, implication, or why-it-matters ONLY when it can be directly inferred from facts stated in SOURCE; do not speculate.",
+      "4) Preserve any important URL.",
+      "5) Finish with 2 to 4 relevant hashtags.",
+      "Use clean paragraph spacing. The tone should feel editorially finished, not robotic or overly promotional."
+    ];
+  }
+
+  if (urls.length) {
+    formatRules.push("SOURCE URLs that must remain unchanged: " + urls.join(" | "));
+  }
+
   return {
     maxChars,
-    prompt: [
-      "Rewrite the Telegram post below as a standalone X post.",
-      modeGuide,
-      "Preserve the source language unless a natural translation is necessary.",
-      "Do not mention Telegram or that this is a rewrite.",
-      "Do not add markdown fences or commentary.",
-      "Make the wording distinct rather than copying sentences.",
-      "Maximum " + maxChars + " characters.",
-      "",
-      "SOURCE:",
-      sourceText
-    ].join("\n")
+    prompt: [...universal, ...formatRules, "", "SOURCE:", sourceText].join("\n")
   };
 }
 
