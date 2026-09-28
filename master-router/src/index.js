@@ -490,7 +490,9 @@ async function childMe(env, child) {
         gemini_configured: Boolean(secrets.gemini_api_key),
         buffer_configured: Boolean(secrets.buffer_api_key)
       };
-    } catch {}
+    } catch {
+      throw Object.assign(new Error("settings_decrypt_failed"), { status: 500 });
+    }
   }
 
   return {
