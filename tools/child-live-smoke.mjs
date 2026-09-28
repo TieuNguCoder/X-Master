@@ -65,7 +65,19 @@ body = await r.json();
 assert.equal(body.account.display_name, "Holly");
 assert.equal(body.account.sources.length, 1);
 
-r = await fetch(root + "/api/accounts/" + body.account.id, {
+const createdAccountId = body.account.id;
+
+r = await fetch(root + "/api/accounts/" + createdAccountId + "/test-post", {
+  method: "POST",
+  headers: { cookie, "content-type": "application/json" },
+  body: "{}"
+});
+assert.equal(r.status, 200);
+body = await r.json();
+assert.equal(body.posted, true);
+assert.equal(body.post.id, "post-test-smoke");
+
+r = await fetch(root + "/api/accounts/" + createdAccountId, {
   method: "PATCH",
   headers: { cookie, "content-type": "application/json" },
   body: JSON.stringify({
