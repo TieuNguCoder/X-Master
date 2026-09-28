@@ -295,20 +295,36 @@ def local_gemini_free_rewrite(job: dict) -> str:
         if extras:
             output = output.rstrip() + "\n\n" + " ".join(extras)
 
+    for url in urls:
+        if url not in output:
+            tag_match = re.search(r"(?:\s*#[\w]+)+\s*$", output, flags=re.UNICODE)
+            tag_line = tag_match.group(0).strip() if tag_match else ""
+            body = output[: tag_match.start()].rstrip() if tag_match else output.rstrip()
+            output = body + "\n\n🔗 " + url + (("\n\n" + tag_line) if tag_line else "")
+
     if len(output) > max_chars:
         tags = re.findall(r"#[\w]+", output, flags=re.UNICODE)
         if not tags:
             tags = fallback[:2]
         tag_line = " ".join(tags[-4:])
-        room = max(40, max_chars - len(tag_line) - 3)
-        body = re.sub(r"(?:\s*#[\w]+)+\s*$", "", output, flags=re.UNICODE).strip()
+        kept_urls = [url for url in urls if url in output]
+        url_block = "\n".join("🔗 " + url for url in kept_urls)
+        suffix = "\n\n".join([part for part in [url_block, tag_line] if part])
+        room = max(40, max_chars - len(suffix) - (2 if suffix else 0))
+
+        body = output
+        for url in kept_urls:
+            body = body.replace("🔗 " + url, "").replace(url, "")
+        body = re.sub(r"(?:\s*#[\w]+)+\s*$", "", body, flags=re.UNICODE)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+
         if len(body) > room:
-            body = body[: room - 1].rstrip()
+            body = body[: max(1, room - 1)].rstrip()
             last_space = body.rfind(" ")
             if last_space > int(room * 0.72):
                 body = body[:last_space]
             body += "…"
-        output = body + "\n\n" + tag_line
+        output = body + (("\n\n" + suffix) if suffix else "")
 
     return output
 
