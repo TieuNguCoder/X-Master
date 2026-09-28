@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$AccountId,
-  [Parameter(Mandatory=$true)][string]$ApiToken,
-  [Parameter(Mandatory=$true)][string]$AdminPassword,
+  [string]$ApiToken = "",
+  [string]$AdminPassword = "",
   [string]$CollectorSecret = "",
   [string]$OutputFile = ""
 )
@@ -11,6 +11,14 @@ $Root = Split-Path -Parent $PSScriptRoot
 $RouterDir = Join-Path $Root "master-router"
 $Config = Join-Path $RouterDir "wrangler.jsonc"
 $WranglerVersion = "4.131.2"
+
+if (-not $ApiToken) { $ApiToken = [string]$env:X_MASTER_CF_TOKEN }
+if (-not $AdminPassword) { $AdminPassword = [string]$env:X_MASTER_ADMIN_PASSWORD }
+if (-not $CollectorSecret) { $CollectorSecret = [string]$env:X_MASTER_COLLECTOR_SECRET }
+
+if (-not $ApiToken) { throw "Cloudflare API Token is required." }
+if (-not $AdminPassword -or $AdminPassword.Length -lt 8) { throw "Admin password must contain at least 8 characters." }
+
 
 function Log([string]$Step,[string]$Message) {
   Write-Host ("[" + $Step + "] " + $Message)
@@ -142,6 +150,8 @@ try {
   $env:X_MASTER_ADMIN_PASSWORD = $AdminPassword
   $hash = (& $Node (Join-Path $RouterDir "tools\hash-admin-password.mjs") 2>&1 | Out-String).Trim()
   Remove-Item Env:X_MASTER_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+  Remove-Item Env:X_MASTER_CF_TOKEN -ErrorAction SilentlyContinue
+  Remove-Item Env:X_MASTER_COLLECTOR_SECRET -ErrorAction SilentlyContinue
   if ($LASTEXITCODE -ne 0 -or -not $hash.StartsWith("pbkdf2-sha256$")) {
     throw ("Could not hash Admin password: " + $hash)
   }
