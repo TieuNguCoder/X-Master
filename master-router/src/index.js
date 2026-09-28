@@ -560,13 +560,17 @@ async function listXAccounts(env, childId) {
   const accounts = [];
   for (const row of (result.results || [])) {
     let geminiConfigured = false;
+    let deepseekConfigured = false;
     let bufferConfigured = false;
+    let aiProvider = "gemini_paid";
     let settingsCorrupt = false;
     if (row.encrypted_json) {
       try {
         const secrets = await decryptJson(env.MASTER_KEY, row.encrypted_json);
         geminiConfigured = Boolean(secrets.gemini_api_key);
+        deepseekConfigured = Boolean(secrets.deepseek_api_key);
         bufferConfigured = Boolean(secrets.buffer_api_key);
+        aiProvider = accountAiProvider(secrets);
       } catch {
         settingsCorrupt = true;
       }
@@ -585,7 +589,10 @@ async function listXAccounts(env, childId) {
       content_mode: row.content_mode || "news",
       x_premium: Boolean(row.x_premium),
       enabled: Boolean(row.enabled),
+      ai_provider: aiProvider,
+      ai_configured: aiProvider === "deepseek_paid" ? deepseekConfigured : geminiConfigured,
       gemini_configured: geminiConfigured,
+      deepseek_configured: deepseekConfigured,
       buffer_configured: bufferConfigured,
       settings_corrupt: settingsCorrupt,
       last_post_status: lastRoute?.status || null,
@@ -685,9 +692,15 @@ async function saveXAccount(env, child, body, accountId = null) {
       throw Object.assign(new Error("account_settings_decrypt_failed"), { status: 500 });
     }
   }
-  const gemini = String(body.gemini_api_key || "").trim();
+  const providerRaw = String(body.ai_provider || secrets.ai_provider || "gemini_paid");
+  const aiProvider = ["gemini_free", "gemini_paid", "deepseek_paid"].includes(providerRaw) ? providerRaw : "gemini_paid";
+  const aiKey = String(body.ai_api_key || body.gemini_api_key || "").trim();
   const buffer = String(body.buffer_api_key || "").trim();
-  if (gemini) secrets.gemini_api_key = gemini;
+  secrets.ai_provider = aiProvider;
+  if (aiKey) {
+    if (aiProvider === "deepseek_paid") secrets.deepseek_api_key = aiKey;
+    else secrets.gemini_api_key = aiKey;
+  }
   if (buffer) secrets.buffer_api_key = buffer;
   const encrypted = Object.keys(secrets).length ? await encryptJson(env.MASTER_KEY, secrets) : null;
 
@@ -725,7 +738,8 @@ async function saveXAccount(env, child, body, accountId = null) {
     display_name: displayName,
     x_handle: xHandle,
     source_count: sourceIds.length,
-    gemini_updated: Boolean(gemini),
+    ai_provider: aiProvider,
+    ai_updated: Boolean(aiKey),
     buffer_updated: Boolean(buffer),
     buffer_channel_id: bufferChannelId,
     content_mode: mode,
