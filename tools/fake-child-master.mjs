@@ -82,6 +82,13 @@ const server = http.createServer(async (req, res) => {
     return json(res, { account }, 201);
   }
 
+  const testPost = req.url.match(/^\/internal\/child\/accounts\/([^/]+)\/test-post$/);
+  if (testPost && req.method === "POST") {
+    const account = accounts.find((a) => a.id === testPost[1]);
+    if (!account) return json(res, { error: "x_account_not_found" }, 404);
+    return json(res, { posted: true, post: { id: "post-test-smoke", status: "sent" } });
+  }
+
   const match = req.url.match(/^\/internal\/child\/accounts\/([^/]+)$/);
   if (match && req.method === "PATCH") {
     const body = JSON.parse(raw || "{}");
