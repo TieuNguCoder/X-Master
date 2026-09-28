@@ -73,7 +73,10 @@ const server = http.createServer(async (req, res) => {
       content_mode: body.content_mode || "news",
       x_premium: Boolean(body.x_premium),
       enabled: body.enabled !== false,
-      gemini_configured: Boolean(body.gemini_api_key),
+      ai_provider: body.ai_provider || "gemini_paid",
+      ai_configured: Boolean(body.ai_api_key),
+      gemini_configured: (body.ai_provider || "gemini_paid") !== "deepseek_paid" && Boolean(body.ai_api_key),
+      deepseek_configured: body.ai_provider === "deepseek_paid" && Boolean(body.ai_api_key),
       buffer_configured: Boolean(body.buffer_api_key),
       source_ids: selected.map((s) => s.id),
       sources: selected
@@ -105,7 +108,10 @@ const server = http.createServer(async (req, res) => {
       content_mode: body.content_mode || "news",
       x_premium: Boolean(body.x_premium),
       enabled: body.enabled !== false,
-      gemini_configured: Boolean(body.gemini_api_key) || old.gemini_configured,
+      ai_provider: body.ai_provider || old.ai_provider || "gemini_paid",
+      ai_configured: Boolean(body.ai_api_key) || old.ai_configured,
+      gemini_configured: ((body.ai_provider || old.ai_provider || "gemini_paid") !== "deepseek_paid" && (Boolean(body.ai_api_key) || old.gemini_configured)),
+      deepseek_configured: ((body.ai_provider || old.ai_provider) === "deepseek_paid" && (Boolean(body.ai_api_key) || old.deepseek_configured)),
       buffer_configured: Boolean(body.buffer_api_key) || old.buffer_configured,
       source_ids: selected.map((s) => s.id),
       sources: selected
