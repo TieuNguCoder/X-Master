@@ -87,6 +87,33 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
             <label>Content mode<select id="mode"><option value="news">News</option><option value="airdrop">Airdrop</option></select></label>
             <label>X Premium<select id="premium"><option value="0">Standard</option><option value="1">Blue / Premium</option></select></label>
           </div>
+          <div class="row">
+            <label>Ngôn ngữ bài đăng
+              <select id="postLanguage">
+                <option value="en-US">English (US) — mặc định</option>
+                <option value="en-GB">English (UK)</option>
+                <option value="vi-VN">Tiếng Việt</option>
+                <option value="ja-JP">日本語 — Japanese</option>
+                <option value="ko-KR">한국어 — Korean</option>
+                <option value="zh-CN">简体中文 — Chinese Simplified</option>
+                <option value="zh-TW">繁體中文 — Chinese Traditional</option>
+                <option value="es-ES">Español — Spanish</option>
+                <option value="pt-BR">Português (Brasil)</option>
+                <option value="fr-FR">Français — French</option>
+                <option value="de-DE">Deutsch — German</option>
+                <option value="id-ID">Bahasa Indonesia</option>
+                <option value="th-TH">ไทย — Thai</option>
+                <option value="ru-RU">Русский — Russian</option>
+                <option value="tr-TR">Türkçe — Turkish</option>
+                <option value="hi-IN">हिन्दी — Hindi</option>
+                <option value="ar-SA">العربية — Arabic</option>
+                <option value="__custom__">Khác / Custom language…</option>
+              </select>
+            </label>
+            <label id="customLanguageWrap" class="hidden">Custom language / BCP-47
+              <input id="customLanguage" placeholder="Ví dụ: it-IT, pl-PL, Filipino, Dutch">
+            </label>
+          </div>
           <label><span>Kênh Telegram cho tài khoản này</span><input id="sourceSearch" placeholder="Tìm tên hoặc @username"></label>
           <div id="sourceChecks" class="sources"></div>
           <label><span>Trạng thái</span><select id="enabled"><option value="1">Đang chạy</option><option value="0">Tạm dừng</option></select></label>
@@ -145,6 +172,19 @@ function aiProviderLabel(provider){
   if(provider==="deepseek_paid") return "DeepSeek Paid";
   return "Gemini Paid";
 }
+function languageLabel(value){
+  const names={"en-US":"English (US)","en-GB":"English (UK)","vi-VN":"Tiếng Việt","ja-JP":"Japanese","ko-KR":"Korean","zh-CN":"Chinese (Simplified)","zh-TW":"Chinese (Traditional)","es-ES":"Spanish","pt-BR":"Portuguese (Brazil)","fr-FR":"French","de-DE":"German","id-ID":"Indonesian","th-TH":"Thai","ru-RU":"Russian","tr-TR":"Turkish","hi-IN":"Hindi","ar-SA":"Arabic"};
+  return names[value]||value||"English (US)";
+}
+function knownLanguage(value){
+  return [...$("#postLanguage").options].some(o=>o.value===value&&o.value!=="__custom__");
+}
+function selectedPostLanguage(){
+  return $("#postLanguage").value==="__custom__"?($("#customLanguage").value.trim()||"en-US"):$("#postLanguage").value;
+}
+function updateLanguageUi(){
+  $("#customLanguageWrap").classList.toggle("hidden",$("#postLanguage").value!=="__custom__");
+}
 function updateAiUi(){
   const provider=$("#aiProvider").value;
   if(provider==="deepseek_paid"){
@@ -169,7 +209,7 @@ function renderAccounts(){
     return '<div class="account"><div class="account-head"><div><h3>'+esc(a.display_name)+'</h3><div class="muted">'+(a.x_handle?'@'+esc(a.x_handle):'Chưa ghi X username')+'</div></div><span class="badge '+(a.enabled?'':'off')+'">'+(a.enabled?'RUNNING':'PAUSED')+'</span></div>'+
       '<div class="chips">'+(chips||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
       '<div class="muted" style="margin-top:8px">AI: '+esc(aiProviderLabel(a.ai_provider))+' · '+(a.ai_configured?'configured':'chưa có key')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
-      '<div class="muted" style="margin-top:5px">Format: '+(a.content_mode==="airdrop"?"Airdrop":"News")+' · X: '+(a.x_premium?"Premium / Blue":"Standard")+'</div>'+
+      '<div class="muted" style="margin-top:5px">Format: '+(a.content_mode==="airdrop"?"Airdrop":"News")+' · X: '+(a.x_premium?"Premium / Blue":"Standard")+' · Language: '+esc(languageLabel(a.post_language||"en-US"))+'</div>'+
       '<div class="muted" style="margin-top:6px">Bài gần nhất: '+esc(a.last_post_status||'chưa có')+(a.last_post_at?' · '+esc(a.last_post_at):'')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</div>'+
       '<div class="actions"><button class="test secondary" data-id="'+esc(a.id)+'">Test đăng X</button><button class="edit secondary" data-id="'+esc(a.id)+'">Sửa</button><button class="del danger" data-id="'+esc(a.id)+'">Xóa</button></div></div>';
   }).join("")||'<div class="muted">Chưa có tài khoản X.</div>';
@@ -179,20 +219,21 @@ function renderAccounts(){
   $("#saveBtn").disabled=!editingId&&state.accounts.length>=max;
 }
 function resetForm(){
-  editingId=null;$("#accountForm").reset();$("#aiProvider").value="gemini_free";$("#mode").value="news";$("#premium").value="0";$("#enabled").value="1";
+  editingId=null;$("#accountForm").reset();$("#aiProvider").value="gemini_free";$("#mode").value="news";$("#premium").value="0";$("#postLanguage").value="en-US";$("#customLanguage").value="";$("#enabled").value="1";
   $("#formTitle").textContent="Thêm tài khoản X";$("#saveBtn").textContent="+ Thêm tài khoản";$("#cancelEdit").classList.add("hidden");
-  $("#aiKey").value="";$("#buffer").value="";$("#buffer").placeholder="Nhập token";updateAiUi();renderSources([]);
+  $("#aiKey").value="";$("#buffer").value="";$("#buffer").placeholder="Nhập token";updateAiUi();updateLanguageUi();renderSources([]);
 }
 function beginEdit(id){
   const a=state.accounts.find(x=>x.id===id);if(!a)return;
   editingId=id;$("#formTitle").textContent="Sửa "+a.display_name;$("#saveBtn").textContent="Lưu thay đổi";$("#cancelEdit").classList.remove("hidden");
   $("#displayName").value=a.display_name||"";$("#xHandle").value=a.x_handle||"";$("#bufferChannelId").value=a.buffer_channel_id||"";$("#bufferChannelName").value=a.buffer_channel_name||"";
-  $("#aiProvider").value=a.ai_provider||"gemini_paid";$("#mode").value=a.content_mode||"news";$("#premium").value=a.x_premium?"1":"0";$("#enabled").value=a.enabled?"1":"0";
+  $("#aiProvider").value=a.ai_provider||"gemini_paid";$("#mode").value=a.content_mode||"news";$("#premium").value=a.x_premium?"1":"0";
+  const lang=a.post_language||"en-US";if(knownLanguage(lang)){ $("#postLanguage").value=lang;$("#customLanguage").value=""; }else{ $("#postLanguage").value="__custom__";$("#customLanguage").value=lang; }updateLanguageUi();$("#enabled").value=a.enabled?"1":"0";
   $("#aiKey").value="";$("#buffer").value="";updateAiUi();$("#aiKey").placeholder=a.ai_configured?"Đã lưu - nhập key mới để thay":$("#aiKey").placeholder;$("#buffer").placeholder=a.buffer_configured?"Đã lưu - nhập token mới để thay":"Nhập token";
   $("#sourceSearch").value="";renderSources(a.source_ids||[]);window.scrollTo({top:0,behavior:"smooth"});
 }
 function payload(){
-  return {display_name:$("#displayName").value.trim(),x_handle:$("#xHandle").value.trim(),ai_provider:$("#aiProvider").value,ai_api_key:$("#aiKey").value.trim(),buffer_api_key:$("#buffer").value.trim(),buffer_channel_id:$("#bufferChannelId").value.trim(),buffer_channel_name:$("#bufferChannelName").value.trim(),content_mode:$("#mode").value,x_premium:$("#premium").value==="1",enabled:$("#enabled").value==="1",source_ids:checkedSources()};
+  return {display_name:$("#displayName").value.trim(),x_handle:$("#xHandle").value.trim(),ai_provider:$("#aiProvider").value,ai_api_key:$("#aiKey").value.trim(),post_language:selectedPostLanguage(),buffer_api_key:$("#buffer").value.trim(),buffer_channel_id:$("#bufferChannelId").value.trim(),buffer_channel_name:$("#bufferChannelName").value.trim(),content_mode:$("#mode").value,x_premium:$("#premium").value==="1",enabled:$("#enabled").value==="1",source_ids:checkedSources()};
 }
 async function loadBufferChannels(){
   const key=$("#buffer").value.trim();
@@ -235,10 +276,12 @@ async function testPost(id){
 async function removeAccount(id){if(!confirm("Xóa tài khoản X này?"))return;try{await api("/api/accounts/"+encodeURIComponent(id),{method:"DELETE"});if(editingId===id)resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}}
 $("#cancelEdit").onclick=resetForm;$("#reloadBtn").onclick=()=>load().catch(err=>$("#status").textContent="Lỗi: "+err.message);
 $("#aiProvider").onchange=updateAiUi;
+$("#postLanguage").onchange=updateLanguageUi;
 $("#loadBufferBtn").onclick=loadBufferChannels;
 $("#bufferChannels").onchange=()=>{const o=$("#bufferChannels").selectedOptions[0];if(!o)return;$("#bufferChannelId").value=o.value;$("#bufferChannelName").value=o.dataset.name||o.textContent||"";};
 $("#sourceSearch").oninput=()=>{const selected=checkedSources();renderSources(selected);};
 updateAiUi();
+updateLanguageUi();
 load().catch(()=>showLogin());
 </script>
 </body></html>\`;
