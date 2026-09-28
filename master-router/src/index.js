@@ -351,6 +351,7 @@ function cleanAiOutput(output, maxChars, sourceText, account) {
   let text = String(output || "").trim().replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
   if (!text) throw Object.assign(new Error("ai:empty_response"), { status: 502, expose: true });
 
+  const sourceUrls = extractSourceUrls(sourceText);
   const existingTags = text.match(/#[\p{L}\p{N}_]+/gu) || [];
   if (existingTags.length < 2) {
     const extra = fallbackHashtags(sourceText, account)
@@ -359,18 +360,34 @@ function cleanAiOutput(output, maxChars, sourceText, account) {
     if (extra.length) text = text.replace(/\s+$/g, "") + "\n\n" + extra.join(" ");
   }
 
+  for (const url of sourceUrls) {
+    if (!text.includes(url)) {
+      const tagMatch = text.match(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu);
+      const tagLine = tagMatch?.[0]?.trim() || "";
+      const body = tagLine ? text.slice(0, text.length - tagMatch[0].length).trimEnd() : text;
+      text = body + "\n\n🔗 " + url + (tagLine ? "\n\n" + tagLine : "");
+    }
+  }
+
   if (text.length > maxChars) {
     const tags = text.match(/#[\p{L}\p{N}_]+/gu) || fallbackHashtags(sourceText, account);
     const tagLine = tags.slice(-4).join(" ");
-    const room = Math.max(40, maxChars - tagLine.length - 3);
-    let body = text.replace(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu, "").trim();
+    const urls = sourceUrls.filter((url) => text.includes(url));
+    const urlBlock = urls.length ? urls.map((url) => "🔗 " + url).join("\n") : "";
+    const suffix = [urlBlock, tagLine].filter(Boolean).join("\n\n");
+    const room = Math.max(40, maxChars - suffix.length - (suffix ? 2 : 0));
+
+    let body = text;
+    for (const url of urls) body = body.replaceAll("🔗 " + url, "").replaceAll(url, "");
+    body = body.replace(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu, "").replace(/\n{3,}/g, "\n\n").trim();
+
     if (body.length > room) {
-      body = body.slice(0, room - 1).trimEnd();
+      body = body.slice(0, Math.max(1, room - 1)).trimEnd();
       const lastSpace = body.lastIndexOf(" ");
       if (lastSpace > room * 0.72) body = body.slice(0, lastSpace);
       body += "…";
     }
-    text = body + "\n\n" + tagLine;
+    text = body + (suffix ? "\n\n" + suffix : "");
   }
   return text;
 }
