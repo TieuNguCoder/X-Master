@@ -602,6 +602,15 @@ async function handleApi(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
 
+  if (path === "/collector/sources" && request.method === "GET") {
+    await requireCollector(env, request);
+    return json({ sources: await collectorSources(env) });
+  }
+
+  if (path === "/ingest" && request.method === "POST") {
+    return json(await ingestEvent(env, request), 202);
+  }
+
   if (path === "/api/health" && request.method === "GET") {
     let database = false;
     try {
@@ -613,7 +622,8 @@ async function handleApi(request, env) {
       service: "x-master-router",
       version: "0.1.0",
       database,
-      architecture: "master-router-child-web"
+      architecture: "master-router-child-web",
+      collector_ready: Boolean(env.COLLECTOR_SECRET)
     }, database ? 200 : 503);
   }
 
@@ -734,7 +744,7 @@ export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/")) {
+      if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/") || url.pathname === "/ingest" || url.pathname.startsWith("/collector/")) {
         return await handleApi(request, env);
       }
       if (env.ASSETS) return env.ASSETS.fetch(request);
