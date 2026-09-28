@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>X-Master Router</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div>
+      <div class="eyebrow">X-MASTER</div>
+      <h1>Master Router</h1>
+      <p>Sources → Child Webs → Tester</p>
+    </div>
+    <div class="header-actions">
+      <span id="healthBadge" class="badge muted">CHECKING</span>
+      <button id="logoutBtn" class="ghost hidden">Logout</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="loginCard" class="panel login-card">
+      <div class="eyebrow">OWNER LOGIN</div>
+      <h2>Đăng nhập Master Web</h2>
+      <p class="muted">Chỉ Owner truy cập trang này.</p>
+      <form id="loginForm" class="stack">
+        <label>Admin Password
+          <input id="adminPassword" type="password" required autocomplete="current-password">
+        </label>
+        <button>Đăng nhập</button>
+      </form>
+      <div id="loginStatus" class="status"></div>
+    </section>
+
+    <section id="app" class="hidden">
+      <nav class="tabs">
+        <button class="tab active" data-tab="children">Child Webs</button>
+        <button class="tab" data-tab="sources">Sources</button>
+        <button class="tab" data-tab="audit">Logs</button>
+      </nav>
+
+      <section id="tab-children" class="tabpage">
+        <div class="grid">
+          <article class="panel">
+            <div class="eyebrow">CREATE CHILD</div>
+            <h2>Tạo web con</h2>
+            <p class="muted">Nhập đủ hạ tầng một lần. Tester sẽ không thấy các key này.</p>
+
+            <form id="childForm" class="stack">
+              <div class="two">
+                <label>Tên tester / web
+                  <input id="childName" placeholder="Tester 01" required>
+                </label>
+                <label>Password web con
+                  <input id="childPassword" type="password" minlength="8" required>
+                </label>
+              </div>
+
+              <fieldset>
+                <legend>Cloudflare</legend>
+                <div class="two">
+                  <label>Account ID
+                    <input id="cfAccount" required>
+                  </label>
+                  <label>API Token
+                    <input id="cfToken" type="password" required autocomplete="off">
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend>Cloudinary</legend>
+                <div class="three">
+                  <label>Cloud Name
+                    <input id="cloudName" required>
+                  </label>
+                  <label>API Key
+                    <input id="cloudKey" required>
+                  </label>
+                  <label>API Secret
+                    <input id="cloudSecret" type="password" required autocomplete="off">
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend>Sources cấp cho tester</legend>
+                <div id="sourceChecks" class="checks">
+                  <span class="muted">Chưa có Source.</span>
+                </div>
+              </fieldset>
+
+              <div class="button-row">
+                <button type="button" id="preflightBtn" class="secondary">1. Test API</button>
+                <button type="submit">2. Deploy Child Web</button>
+              </div>
+            </form>
+            <div id="deployStatus" class="status"></div>
+          </article>
+
+          <article id="shareCard" class="panel success-panel hidden">
+            <div class="eyebrow">READY TO SHARE</div>
+            <h2>Thông tin gửi tester</h2>
+            <p class="muted">Chỉ gửi đúng 2 dòng này.</p>
+            <textarea id="shareText" rows="6" readonly></textarea>
+            <button id="copyShareBtn">Copy URL + Password</button>
+          </article>
+        </div>
+
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">CHILD WEBS</div>
+              <h2>Web con đang quản lý</h2>
+            </div>
+            <button id="refreshBtn" class="ghost">Refresh</button>
+          </div>
+          <div id="childrenList" class="cards"></div>
+        </article>
+      </section>
+
+      <section id="tab-sources" class="tabpage hidden">
+        <div class="grid">
+          <article class="panel">
+            <div class="eyebrow">SOURCE</div>
+            <h2>Thêm Telegram Source</h2>
+            <form id="sourceForm" class="stack">
+              <label>Title<input id="sourceTitle" placeholder="Crypto News A" required></label>
+              <div class="two">
+                <label>Username<input id="sourceUsername" placeholder="@channelname"></label>
+                <label>Channel ID<input id="sourceChannelId" placeholder="-100..."></label>
+              </div>
+              <button>+ Add Source</button>
+            </form>
+            <div id="sourceStatus" class="status"></div>
+          </article>
+
+          <article class="panel">
+            <div class="eyebrow">SOURCE CATALOG</div>
+            <h2>Sources</h2>
+            <div id="sourcesList" class="rows"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="tab-audit" class="tabpage hidden">
+        <article class="panel">
+          <div class="section-head">
+            <div><div class="eyebrow">AUDIT</div><h2>System Logs</h2></div>
+            <button id="auditRefreshBtn" class="ghost">Refresh</button>
+          </div>
+          <div id="auditList" class="rows mono"></div>
+        </article>
+      </section>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
