@@ -350,6 +350,7 @@ class XMasterApp(tk.Tk):
         admin = self.secrets.get("admin") or {}
         tg = self.secrets.get("telegram") or {}
         self.cf_account.set(str(infra.get("account_id") or ""))
+        self.cf_token.set(str(infra.get("api_token") or ""))
         self.admin_password.set(str(admin.get("password") or ""))
         self.tg_api_id.set(str(tg.get("api_id") or ""))
         self.tg_api_hash.set(str(tg.get("api_hash") or ""))
@@ -524,6 +525,7 @@ class XMasterApp(tk.Tk):
             stderr=subprocess.STDOUT,
             creationflags=flags,
         )
+        log.close()
         self.collector_proc = proc
         self.collector_pid_path.write_text(str(proc.pid), encoding="utf-8")
         self.log(f"Collector started pid={proc.pid}")
@@ -589,16 +591,36 @@ class XMasterApp(tk.Tk):
             try:
                 result = work()
             except Exception as exc:
-                self.after(0, lambda: fail(exc))
+                self.after(0, lambda err=exc: fail(err))
                 return
             self.after(0, lambda: done(result))
         threading.Thread(target=runner, daemon=True).start()
 
 
 def main():
+    if "--version" in sys.argv:
+        print(APP_VERSION)
+        return
+
+    if "--self-test" in sys.argv:
+        root = app_root()
+        required = [
+            root / "deploy" / "SETUP-MASTER.ps1",
+            root / "master-router" / "src" / "index.js",
+            root / "master-router" / "web" / "index.html",
+            root / "master-router" / "schema.sql",
+        ]
+        missing = [str(p) for p in required if not p.exists()]
+        if missing:
+            print("SELF TEST FAILED: " + " | ".join(missing))
+            raise SystemExit(2)
+        print("SELF TEST PASS · X-Master " + APP_VERSION)
+        return
+
     if "--collector" in sys.argv:
         asyncio.run(run_collector())
         return
+
     app = XMasterApp()
     app.mainloop()
 
