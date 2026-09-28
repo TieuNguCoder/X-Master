@@ -87,7 +87,7 @@ jobs:
       - name: Assemble portable package
         shell: pwsh
         run: |
-          $release = "release/X-Master-v0.2.1"
+          $release = "release/X-Master-v0.2.2"
           New-Item -ItemType Directory -Force $release | Out-Null
           Copy-Item dist/X-Master.exe $release/
           Copy-Item deploy $release/deploy -Recurse
@@ -109,7 +109,7 @@ jobs:
       - name: Run packaged EXE self-test
         shell: pwsh
         run: |
-          Push-Location release/X-Master-v0.2.1
+          Push-Location release/X-Master-v0.2.2
           $proc = Start-Process -FilePath ".\X-Master.exe" -ArgumentList "--self-test" -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "X-Master self-test failed with exit code $($proc.ExitCode)" }
           Pop-Location
@@ -117,33 +117,33 @@ jobs:
       - name: ZIP and extraction integrity test
         shell: pwsh
         run: |
-          Compress-Archive -Path release/X-Master-v0.2.1/* -DestinationPath release/X-Master-v0.2.1-Windows.zip -CompressionLevel Optimal -Force
+          Compress-Archive -Path release/X-Master-v0.2.2/* -DestinationPath release/X-Master-v0.2.2-Windows.zip -CompressionLevel Optimal -Force
           New-Item -ItemType Directory -Force release/verify | Out-Null
-          Expand-Archive release/X-Master-v0.2.1-Windows.zip release/verify -Force
+          Expand-Archive release/X-Master-v0.2.2-Windows.zip release/verify -Force
           if (-not (Test-Path release/verify/X-Master.exe)) { throw "ZIP missing X-Master.exe" }
           if (-not (Test-Path release/verify/deploy/SETUP-MASTER.ps1)) { throw "ZIP missing deploy script" }
           if (-not (Test-Path release/verify/master-router/web/index.html)) { throw "ZIP missing Master Web" }
-          Get-FileHash release/X-Master-v0.2.1-Windows.zip -Algorithm SHA256
+          Get-FileHash release/X-Master-v0.2.2-Windows.zip -Algorithm SHA256
 
       - name: Upload branch package
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: X-Master-v0.2.1-Windows
-          path: release/X-Master-v0.2.1-Windows.zip
+          name: X-Master-v0.2.2-Windows
+          path: release/X-Master-v0.2.2-Windows.zip
           if-no-files-found: error
 
-      - name: Publish v0.2.1 release
+      - name: Publish v0.2.2 release
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "x-master-v0.2.1"
+          $tag = "x-master-v0.2.2"
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "X-Master v0.2.1" --notes "X-Master v0.2.1 completes Phase 4: Telegram messages are rewritten with Gemini and published immediately to the selected X channel through Buffer shareNow, with per-account POSTED/FAILED diagnostics and a direct X test-post control."
+            gh release create $tag --title "X-Master v0.2.2" --notes "X-Master v0.2.2 fixes silent Telegram skips after account/source changes: Collector refreshes assignments on message miss, logs CAPTURED/ROUTED/SKIPPED/FAILED, auto-restarts stale Collector processes after Master updates, and Master Web adds a direct Buffer-to-X test post button."
             if ($LASTEXITCODE -ne 0) { throw "Could not create release" }
           }
-          gh release upload $tag release/X-Master-v0.2.1-Windows.zip --clobber
+          gh release upload $tag release/X-Master-v0.2.2-Windows.zip --clobber
           if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset" }
