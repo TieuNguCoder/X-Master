@@ -88,6 +88,15 @@ try {
         candidates: [{ content: { parts: [{ text: "Rewritten smoke post" }] } }]
       }), { status: 200, headers: { "content-type": "application/json" } });
     }
+    if (String(url) === "https://api.deepseek.com/chat/completions") {
+      assert.equal(init.headers.Authorization, "Bearer deepseek-test-key");
+      const payload = JSON.parse(init.body);
+      assert.equal(payload.model, "deepseek-flash");
+      assert.equal(payload.thinking.type, "disabled");
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "DeepSeek rewritten smoke post" } }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (String(url) === "https://api.buffer.com") {
       const payload = JSON.parse(init.body);
       assert.ok(payload.query.includes("mode: shareNow"));
@@ -112,6 +121,13 @@ try {
   );
   assert.equal(rewritten, "Rewritten smoke post");
 
+  const deepseekRewritten = await __test.deepseekRewrite(
+    "deepseek-test-key",
+    "Original Telegram smoke post",
+    { content_mode: "airdrop", x_premium: 0 }
+  );
+  assert.equal(deepseekRewritten, "DeepSeek rewritten smoke post");
+
   const post = await __test.bufferCreateNow(
     "buffer-test-key",
     "buffer-channel-smoke",
@@ -119,8 +135,8 @@ try {
   );
   assert.equal(post.id, "post-smoke");
   assert.equal(post.status, "sent");
-  assert.equal(postingCalls.length, 2);
-  console.log("Gemini rewrite + Buffer shareNow posting: PASS");
+  assert.equal(postingCalls.length, 3);
+  console.log("Gemini + DeepSeek rewrite + Buffer shareNow posting: PASS");
 } finally {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;
