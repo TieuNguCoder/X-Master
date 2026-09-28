@@ -101,8 +101,8 @@ jobs:
         shell: pwsh
         run: |
           Push-Location release/X-Master-v0.1.0
-          .\X-Master.exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "X-Master self-test failed" }
+          $proc = Start-Process -FilePath ".\X-Master.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "X-Master self-test failed with exit code $($proc.ExitCode)" }
           Pop-Location
 
       - name: ZIP and extraction integrity test
