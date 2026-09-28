@@ -156,12 +156,28 @@ def local_gemini_free_rewrite(job: dict) -> str:
     premium = bool(job.get("x_premium"))
     mode = "airdrop" if str(job.get("content_mode") or "news") == "airdrop" else "news"
     max_chars = 1600 if premium else 275
+    post_language = str(job.get("post_language") or "en-US").strip()[:80] or "en-US"
+    language_names = {
+        "en-US": "English (United States)", "en-GB": "English (United Kingdom)",
+        "vi-VN": "Vietnamese", "ja-JP": "Japanese", "ko-KR": "Korean",
+        "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese",
+        "es-ES": "Spanish", "pt-BR": "Portuguese (Brazil)", "fr-FR": "French",
+        "de-DE": "German", "id-ID": "Indonesian", "th-TH": "Thai",
+        "ru-RU": "Russian", "tr-TR": "Turkish", "hi-IN": "Hindi", "ar-SA": "Arabic",
+    }
+    language_name = language_names.get(post_language, post_language)
+    language_rule = (
+        f"TARGET LANGUAGE: {language_name} ({post_language}). Write the entire post naturally "
+        "for readers of this language. Translate SOURCE content as needed. Keep URLs, @usernames, "
+        "ticker symbols, brand/project names, and proper nouns unchanged when translation would be unnatural. "
+        "Hashtags should suit the target audience/language, though universal topic hashtags may remain in English."
+    )
     urls = re.findall(r"https?://[^\s<>()]+", source_text)
 
     universal = [
         "You are rewriting a Telegram source post into a ready-to-publish X post.",
         "Use ONLY facts present in SOURCE. Never invent rewards, amounts, token prices, dates, deadlines, eligibility, partnerships, quotes, statistics, links, or guarantees.",
-        "Preserve the source language unless the source is clearly mixed or a natural English rendering is required.",
+        language_rule,
         "Do not mention Telegram, rewriting, AI, or the source.",
         "Do not use markdown tables or code fences.",
         "Keep every important URL from SOURCE exactly unchanged.",
