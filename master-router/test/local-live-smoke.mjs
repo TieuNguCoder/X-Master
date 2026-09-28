@@ -48,6 +48,22 @@ assert.equal(r.response.status, 200);
 assert.equal(r.body.sources.length, 2);
 assert.equal(r.body.children.length, 0);
 
+r = await call("/collector/catalog", {
+  method: "POST",
+  headers: { "x-collector-secret": "collector-smoke-secret" },
+  body: JSON.stringify({
+    sources: [
+      { title: "Smoke Source", username: "smoke_source", channel_id: "-1001234567890" }
+    ]
+  })
+});
+assert.equal(r.response.status, 200);
+assert.equal(r.body.synced, 1);
+
+r = await call("/api/admin/dashboard");
+assert.equal(r.response.status, 200);
+assert.equal(r.body.sources.length, 1, "catalog must drop channels that are no longer joined");
+
 r = await call("/collector/sources", {
   headers: { "x-collector-secret": "collector-smoke-secret" }
 });
