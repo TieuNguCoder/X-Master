@@ -206,7 +206,7 @@ def local_gemini_free_rewrite(job: dict) -> str:
     candidates = payload.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
     output = "".join(str(part.get("text") or "") for part in parts).strip()
-    output = output.strip(" \t\r\n\\"'“”")
+    output = output.strip(" \\t\\r\\n\\\"'“”")
     if not output:
         raise RuntimeError("empty_response")
     if len(output) > max_chars:
