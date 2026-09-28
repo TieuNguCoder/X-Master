@@ -153,6 +153,8 @@ async def run_collector():
     master_root = os.environ["XM_MASTER_ROOT"].rstrip("/")
     collector_secret = os.environ["XM_COLLECTOR_SECRET"]
     log_path = Path(os.environ.get("XM_COLLECTOR_LOG") or (data_dir() / "collector.log"))
+    version_path = Path(os.environ.get("XM_COLLECTOR_VERSION_FILE") or (data_dir() / "collector.version"))
+    version_path.write_text(APP_VERSION, encoding="utf-8")
 
     def log(msg: str):
         line = time.strftime("%Y-%m-%d %H:%M:%S") + "  " + msg
@@ -312,7 +314,7 @@ async def run_collector():
                 except Exception as exc:
                     log("Telegram catalog refresh error: " + str(exc))
 
-    log("Collector started.")
+    log(f"Collector started version={APP_VERSION}.")
     asyncio.create_task(refresher())
     await client.run_until_disconnected()
 
@@ -332,6 +334,7 @@ class XMasterApp(tk.Tk):
         self.deploy_proc: subprocess.Popen | None = None
         self.collector_proc: subprocess.Popen | None = None
         self.collector_pid_path = self.data / "collector.pid"
+        self.collector_version_path = self.data / "collector.version"
         self.owner_log = self.data / "owner.log"
         self.collector_log = self.data / "collector.log"
 
@@ -552,6 +555,11 @@ class XMasterApp(tk.Tk):
             self.master_url.set(result["master_root"])
             self.deploy_step.set("[8/8] MASTER READY")
             self.deploy_btn.configure(state="normal")
+            collector_was_running = self._alive(self._collector_pid())
+            if collector_was_running:
+                self.log("Master updated; restarting Collector to reload routes and new runtime.")
+                self.stop_collector()
+                self.start_collector()
             self.refresh_status()
             messagebox.showinfo(APP_NAME, "Master Router READY.")
 
@@ -597,7 +605,14 @@ class XMasterApp(tk.Tk):
 
     def start_collector(self):
         if self._alive(self._collector_pid()):
-            return messagebox.showinfo(APP_NAME, "Collector đang chạy.")
+            try:
+                running_version = self.collector_version_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                running_version = ""
+            if running_version == APP_VERSION:
+                return messagebox.showinfo(APP_NAME, f"Collector v{APP_VERSION} đang chạy.")
+            self.log(f"Collector version mismatch running={running_version or 'unknown'} app={APP_VERSION}; restarting.")
+            self.stop_collector()
 
         root = str(self.state.get("master_root") or "")
         secret = str(self.secrets.get("collector_secret") or "")
@@ -615,6 +630,7 @@ class XMasterApp(tk.Tk):
             "XM_MASTER_ROOT": root,
             "XM_COLLECTOR_SECRET": secret,
             "XM_COLLECTOR_LOG": str(self.collector_log),
+            "XM_COLLECTOR_VERSION_FILE": str(self.collector_version_path),
         })
 
         if getattr(sys, "frozen", False):
@@ -650,6 +666,7 @@ class XMasterApp(tk.Tk):
         except Exception:
             pass
         self.collector_pid_path.unlink(missing_ok=True)
+        self.collector_version_path.unlink(missing_ok=True)
         self.collector_proc = None
         self.log("Collector stopped.")
         self.refresh_status()
