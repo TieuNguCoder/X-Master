@@ -35,6 +35,16 @@ assert.equal(body.source_catalog.length, 2);
 assert.equal(body.accounts.length, 0);
 assert.equal(body.limits.max_accounts, 5);
 
+r = await fetch(root + "/api/buffer/channels", {
+  method: "POST",
+  headers: { cookie, "content-type": "application/json" },
+  body: JSON.stringify({ buffer_api_key: "buffer-smoke" })
+});
+assert.equal(r.status, 200);
+body = await r.json();
+assert.equal(body.channels.length, 1);
+assert.equal(body.channels[0].id, "buffer-channel-1");
+
 r = await fetch(root + "/api/accounts", {
   method: "POST",
   headers: { cookie, "content-type": "application/json" },
