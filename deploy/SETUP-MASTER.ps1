@@ -244,14 +244,20 @@ try {
   Log "6/8" "Health check"
   $rootUrl = "https://x-master-router.$subdomain.workers.dev"
   $health = $null
+  $healthLastError = ""
   for ($i=0; $i -lt 12; $i++) {
     Start-Sleep -Seconds 1
     try {
       $health = Invoke-RestMethod -Uri ($rootUrl + "/api/health") -TimeoutSec 15
       if ($health.ok) { break }
-    } catch {}
+      $healthLastError = "Health endpoint returned ok=false."
+    } catch {
+      $healthLastError = $_.Exception.Message
+    }
   }
-  if (-not $health.ok) { throw "Master Router health check failed." }
+  if (-not $health.ok) {
+    throw ("Master Router health check failed." + $(if ($healthLastError) { " Last error: " + $healthLastError } else { "" }))
+  }
 
   Log "7/8" "Save local deployment result"
   $state = [ordered]@{
