@@ -165,7 +165,7 @@ async function cloudflareRequest(infra, path, init = {}) {
   try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
   if (!response.ok || body.success === false) {
     const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
-    throw new Error("cloudflare:" + detail);
+    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
   }
   return body;
 }
@@ -176,9 +176,6 @@ async function preflightInfra(infra) {
   await cloudflareRequest(infra, "/workers/scripts");
   checks.push("workers");
 
-  await cloudflareRequest(infra, "/workers/subdomain");
-  checks.push("workers_subdomain");
-
   const auth = btoa(infra.cloudinary_api_key + ":" + infra.cloudinary_api_secret);
   const cloudinary = await fetch(
     "https://api.cloudinary.com/v1_1/" + encodeURIComponent(infra.cloudinary_cloud_name) + "/usage",
@@ -186,7 +183,10 @@ async function preflightInfra(infra) {
   );
   if (!cloudinary.ok) {
     const detail = (await cloudinary.text()).slice(0, 600);
-    throw new Error("cloudinary:" + (detail || ("HTTP " + cloudinary.status)));
+    throw Object.assign(
+      new Error("cloudinary:" + (detail || ("HTTP " + cloudinary.status))),
+      { status: 502, expose: true }
+    );
   }
   checks.push("cloudinary");
 
@@ -262,17 +262,17 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
       last = safeError(error);
     }
   }
-  if (!healthy) throw new Error("child_health_failed:" + last.slice(0, 400));
+  if (!healthy) throw Object.assign(new Error("child_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
 
   return { workerName, webUrl };
 }
 
-async function deleteChildWorker(infra, workerName) {
+async function deleteChildWorker(infra, workerName, bestEffort = false) {
   if (!workerName) return;
   try {
     await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), { method: "DELETE" });
-  } catch {
-    // best effort rollback/delete; DB state records failures at caller when needed
+  } catch (error) {
+    if (!bestEffort) throw error;
   }
 }
 
@@ -391,7 +391,7 @@ async function createChild(env, request, admin) {
       }
     };
   } catch (error) {
-    if (deployed && workerName) await deleteChildWorker(infra, workerName);
+    if (deployed && workerName) await deleteChildWorker(infra, workerName, true);
     if (childId) {
       await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run().catch(() => {});
     }
@@ -753,7 +753,7 @@ export default {
       const status = Number(error?.status || 500);
       return json({
         ok: false,
-        error: status >= 500 ? "internal_error" : safeError(error)
+        error: error?.expose ? safeError(error) : (status >= 500 ? "internal_error" : safeError(error))
       }, status);
     }
   }
