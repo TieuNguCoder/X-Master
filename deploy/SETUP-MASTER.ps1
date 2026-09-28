@@ -59,6 +59,13 @@ if ($RuntimeSelfTest) {
   if ($testId -ne "db-test-id") { throw "D1 id compatibility self-test failed." }
   $ansiSample = ([char]27).ToString() + "[33mWARN" + ([char]27).ToString() + "[0m"
   if ((Remove-Ansi $ansiSample) -ne "WARN") { throw "ANSI sanitizer self-test failed." }
+
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if ($nodeCmd) {
+    $stdinEcho = ("stdin-ok" | & $nodeCmd.Source -e "let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(s.trim()))" | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $stdinEcho -ne "stdin-ok") { throw "Native stdin forwarding self-test failed." }
+  }
+
   Write-Host ("RUNTIME SELF TEST PASS | WindowsPowerShell=" + $PSVersionTable.PSVersion.ToString())
   exit 0
 }
