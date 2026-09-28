@@ -808,7 +808,7 @@ async function createChild(env, request, admin) {
     const passwordHash = await createPasswordHash(password);
     const childSecret = randomHex(32);
     const childSecretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
-    const encryptedInfra = await encryptJson(env.MASTER_KEY, infra);
+    const encryptedInfra = await encryptJson(env.MASTER_KEY, { ...infra, child_secret: childSecret });
 
     await env.DB.batch([
       env.DB.prepare(
@@ -909,6 +909,97 @@ async function updateChild(env, request, admin, childId) {
   }
 
   return { child: await env.DB.prepare("SELECT id,name,slug,status,web_url,worker_name FROM children WHERE id=?").bind(childId).first() };
+}
+
+async function updateChildWorkerCode(env, request, admin, childId) {
+  const child = await env.DB.prepare(
+    "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
+  ).bind(childId).first();
+  if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
+  if (!child.encrypted_json) throw Object.assign(new Error("child_infra_missing"), { status: 409 });
+
+  const stored = await decryptJson(env.MASTER_KEY, child.encrypted_json);
+  const infra = {
+    cloudflare_account_id: stored.cloudflare_account_id,
+    cloudflare_api_token: stored.cloudflare_api_token,
+    cloudinary_cloud_name: stored.cloudinary_cloud_name,
+    cloudinary_api_key: stored.cloudinary_api_key,
+    cloudinary_api_secret: stored.cloudinary_api_secret
+  };
+  const childSecret = String(stored.child_secret || randomHex(32));
+  const workerName = child.worker_name || ("xm-" + child.slug + "-" + child.id.slice(-6)).slice(0, 62);
+  const masterRoot = new URL(request.url).origin;
+  const source = renderChildWorkerSource();
+  const metadata = {
+    main_module: "worker.js",
+    compatibility_date: "2026-09-18",
+    bindings: [
+      { type: "plain_text", name: "CHILD_ID", text: child.id },
+      { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
+      { type: "secret_text", name: "CHILD_SECRET", text: childSecret }
+    ]
+  };
+  const form = new FormData();
+  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+  form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
+
+  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+    method: "PUT",
+    body: form
+  });
+  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+    method: "POST",
+    body: JSON.stringify({ enabled: true })
+  });
+
+  const subdomain = await ensureWorkersSubdomain(infra);
+  const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
+  const secretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
+  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...infra, child_secret: childSecret });
+
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE children SET child_secret_hash=?,worker_name=?,web_url=?,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+    ).bind(secretHash, workerName, webUrl, childId),
+    env.DB.prepare(
+      "UPDATE child_infra SET encrypted_json=?,updated_at=CURRENT_TIMESTAMP WHERE child_id=?"
+    ).bind(updatedInfra, childId)
+  ]);
+
+  let healthy = false;
+  let last = "";
+  for (let i = 0; i < 12; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
+      last = await response.text();
+      if (response.ok) {
+        const parsed = JSON.parse(last);
+        if (parsed.ok && parsed.child_id === childId) {
+          healthy = true;
+          break;
+        }
+      }
+    } catch (error) {
+      last = safeError(error);
+    }
+  }
+
+  if (!healthy) {
+    await env.DB.prepare(
+      "UPDATE children SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+    ).bind(("child_update_health_failed:" + last).slice(0, 1200), childId).run();
+    throw Object.assign(new Error("child_update_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
+  }
+
+  await env.DB.prepare(
+    "UPDATE children SET last_health_at=CURRENT_TIMESTAMP,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+  ).bind(childId).run();
+  await audit(env, "admin", admin.id, "child.code_updated", "child", childId, {
+    worker_name: workerName,
+    web_url: webUrl
+  });
+  return { updated: true, child: { id: childId, name: child.name, status: "ready", worker_name: workerName, web_url: webUrl } };
 }
 
 async function deleteChild(env, admin, childId) {
@@ -1352,6 +1443,11 @@ async function handleApi(request, env, ctx) {
 
     if (path === "/api/admin/children" && request.method === "GET") {
       return json({ children: await listChildren(env) });
+    }
+
+    const childCodeMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/update-code$/);
+    if (childCodeMatch && request.method === "POST") {
+      return json(await updateChildWorkerCode(env, request, admin, childCodeMatch[1]));
     }
 
     const childMatch = path.match(/^\/api\/admin\/children\/([^/]+)$/);
