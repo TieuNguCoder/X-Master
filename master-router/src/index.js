@@ -355,7 +355,7 @@ async function deleteChildWorker(infra, workerName, bestEffort = false) {
 
 async function listSources(env) {
   const result = await env.DB.prepare(
-    "SELECT id,title,username,channel_id,enabled,created_at,updated_at FROM sources ORDER BY created_at DESC"
+    "SELECT id,title,username,channel_id,enabled,created_at,updated_at FROM sources WHERE enabled=1 ORDER BY lower(title),id"
   ).all();
   return result.results || [];
 }
@@ -721,6 +721,8 @@ async function syncCollectorCatalog(env, request) {
   const body = await readJson(request);
   const incoming = Array.isArray(body.sources) ? body.sources.slice(0, 2000) : [];
   let synced = 0;
+
+  await env.DB.prepare("UPDATE sources SET enabled=0,updated_at=CURRENT_TIMESTAMP WHERE enabled<>0").run();
 
   for (const raw of incoming) {
     const title = String(raw.title || raw.name || "").trim().slice(0, 300);
