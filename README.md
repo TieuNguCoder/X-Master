@@ -47,8 +47,44 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 
 ## Status
 
-- Phase 1: Master Router foundation — in progress
-- Phase 2: Child Web provisioning
-- Phase 3: Local Telegram Collector + Sources
-- Phase 4: Buffer/Gemini child workflow
+- Phase 1: Master Router foundation — DONE
+- Phase 2: Child Web provisioning — DONE (deploy + password + source assignment + rollback)
+- Phase 3: Local Telegram Collector + Sources — FOUNDATION DONE
+- Phase 4: Gemini/Buffer processing + X posting — NEXT
 - Phase 5: real end-to-end Telegram → X test
+
+## v0.1.0 owner workflow
+
+1. Run `X-Master.exe`.
+2. Deploy / Update Master Router with one Cloudflare Account ID, API Token and Master Admin password.
+3. Open Master Web.
+4. Add Telegram Sources.
+5. Create Child Web:
+   - child name;
+   - child password;
+   - Cloudflare Account ID / API Token;
+   - Cloudinary Cloud Name / API Key / API Secret;
+   - assigned Sources.
+6. Master validates infrastructure, deploys the Child Worker, health-checks it, and rolls back on failure.
+7. Owner sends only:
+   - Child Web URL;
+   - child password.
+8. Tester enters only Gemini + Buffer in the Child Web.
+
+## Tests
+
+CI currently covers:
+
+- PBKDF2/AES/HMAC security primitives;
+- Master UI + schema contract;
+- generated Child Worker syntax;
+- Wrangler dry-run;
+- live local Master Router + D1;
+- Owner login;
+- Source creation;
+- Collector source sync;
+- ingest + duplicate protection;
+- live generated Child Web login/session/settings;
+- Windows EXE self-test;
+- ZIP extract/integrity check.
+

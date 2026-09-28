@@ -1,0 +1,205 @@
+param(
+  [Parameter(Mandatory=$true)][string]$AccountId,
+  [string]$ApiToken = "",
+  [string]$AdminPassword = "",
+  [string]$CollectorSecret = "",
+  [string]$OutputFile = ""
+)
+
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+$RouterDir = Join-Path $Root "master-router"
+$Config = Join-Path $RouterDir "wrangler.jsonc"
+$WranglerVersion = "4.131.2"
+
+if (-not $ApiToken) { $ApiToken = [string]$env:X_MASTER_CF_TOKEN }
+if (-not $AdminPassword) { $AdminPassword = [string]$env:X_MASTER_ADMIN_PASSWORD }
+if (-not $CollectorSecret) { $CollectorSecret = [string]$env:X_MASTER_COLLECTOR_SECRET }
+
+if (-not $ApiToken) { throw "Cloudflare API Token is required." }
+if (-not $AdminPassword -or $AdminPassword.Length -lt 8) { throw "Admin password must contain at least 8 characters." }
+
+
+function Log([string]$Step,[string]$Message) {
+  Write-Host ("[" + $Step + "] " + $Message)
+}
+
+function New-RandomSecret([int]$Bytes = 48) {
+  $data = New-Object byte[] $Bytes
+  [Security.Cryptography.RandomNumberGenerator]::Fill($data)
+  return [Convert]::ToBase64String($data)
+}
+
+$BundledNode = Join-Path $Root "runtime\node\node.exe"
+$BundledWranglerJs = Join-Path $Root "runtime\wrangler\node_modules\wrangler\bin\wrangler.js"
+$UseBundled = (Test-Path $BundledNode) -and (Test-Path $BundledWranglerJs)
+
+if ($UseBundled) {
+  $Node = $BundledNode
+  function Wrangler { & $Node $BundledWranglerJs @args }
+} else {
+  $NodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $NodeCmd) { throw "Node runtime not found. Use full X-Master Windows package." }
+  $Node = $NodeCmd.Source
+  function Wrangler { & npx --yes "wrangler@$WranglerVersion" @args }
+}
+
+$env:CLOUDFLARE_ACCOUNT_ID = $AccountId
+$env:CLOUDFLARE_API_TOKEN = $ApiToken
+$env:CI = "true"
+$env:NO_COLOR = "1"
+
+function Cf([string]$Method,[string]$Path,[object]$Body = $null) {
+  $headers = @{ Authorization = "Bearer $ApiToken"; "Content-Type" = "application/json" }
+  $uri = "https://api.cloudflare.com/client/v4/accounts/$AccountId$Path"
+  try {
+    if ($null -eq $Body) {
+      return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -TimeoutSec 45
+    }
+    return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -Body ($Body | ConvertTo-Json -Compress) -TimeoutSec 45
+  } catch {
+    throw ("Cloudflare API " + $Path + " failed: " + $_.Exception.Message)
+  }
+}
+
+function Ensure-Subdomain {
+  try {
+    $current = Cf "GET" "/workers/subdomain"
+    if ($current.success -and $current.result.subdomain) { return [string]$current.result.subdomain }
+  } catch {}
+
+  $tail = ($AccountId.ToLowerInvariant() -replace '[^a-z0-9]','')
+  if ($tail.Length -gt 10) { $tail = $tail.Substring($tail.Length - 10) }
+
+  foreach ($suffix in @("","-1","-2","-3","-4")) {
+    try {
+      $candidate = "xmaster-$tail$suffix"
+      $created = Cf "PUT" "/workers/subdomain" @{ subdomain = $candidate }
+      if ($created.success -and $created.result.subdomain) { return [string]$created.result.subdomain }
+    } catch {}
+  }
+  throw "Could not configure workers.dev subdomain."
+}
+
+function List-D1 {
+  $raw = (Wrangler d1 list --json 2>&1 | Out-String)
+  if ($LASTEXITCODE -ne 0) { throw ("Could not list D1: " + $raw.Trim()) }
+  $start = $raw.IndexOf("[")
+  $end = $raw.LastIndexOf("]")
+  if ($start -lt 0 -or $end -lt $start) { throw ("D1 list did not return JSON: " + $raw.Trim()) }
+  return @($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json)
+}
+
+function Put-Secret([string]$Name,[string]$Value) {
+  if (-not $Value) { throw "Secret value missing: $Name" }
+  $Value | Wrangler secret put $Name --config $Config
+  if ($LASTEXITCODE -ne 0) { throw "Could not set Worker secret: $Name" }
+}
+
+function Secret-Names {
+  $raw = (Wrangler secret list --config $Config --format json 2>&1 | Out-String)
+  if ($LASTEXITCODE -ne 0) { return @() }
+  $start = $raw.IndexOf("[")
+  $end = $raw.LastIndexOf("]")
+  if ($start -lt 0 -or $end -lt $start) { return @() }
+  return @($raw.Substring($start, $end - $start + 1) | ConvertFrom-Json | ForEach-Object { [string]$_.name })
+}
+
+try {
+  Log "0/8" "Validate Cloudflare"
+  $null = Cf "GET" "/workers/subdomain"
+
+  Log "1/8" "Create / reuse D1"
+  $dbs = List-D1
+  $db = $dbs | Where-Object { $_.name -eq "x-master" } | Select-Object -First 1
+  if (-not $db) {
+    Wrangler d1 create x-master --location apac
+    if ($LASTEXITCODE -ne 0) { throw "Could not create x-master D1." }
+    $dbs = List-D1
+    $db = $dbs | Where-Object { $_.name -eq "x-master" } | Select-Object -First 1
+  }
+  if (-not $db.uuid) { throw "D1 database_id not found." }
+  $dbId = [string]$db.uuid
+
+  Log "2/8" "Generate Wrangler config"
+  $template = Get-Content (Join-Path $RouterDir "wrangler.example.jsonc") -Raw
+  $template = $template.Replace("REPLACE_WITH_D1_DATABASE_ID", $dbId)
+  [IO.File]::WriteAllText($Config, $template, (New-Object Text.UTF8Encoding($false)))
+
+  Log "3/8" "Apply D1 schema"
+  Push-Location $RouterDir
+  try {
+    Wrangler d1 execute x-master --remote --file schema.sql --config wrangler.jsonc
+    if ($LASTEXITCODE -ne 0) { throw "D1 schema failed." }
+  } finally { Pop-Location }
+
+  Log "4/8" "Deploy Master Router + Web"
+  $subdomain = Ensure-Subdomain
+  Push-Location $RouterDir
+  try {
+    Wrangler deploy --config wrangler.jsonc
+    if ($LASTEXITCODE -ne 0) { throw "Master Router deploy failed." }
+  } finally { Pop-Location }
+
+  Log "5/8" "Configure / preserve secrets"
+  $existing = Secret-Names
+
+  if ($existing -notcontains "MASTER_KEY") { Put-Secret "MASTER_KEY" (New-RandomSecret 64) }
+  if ($existing -notcontains "SESSION_PEPPER") { Put-Secret "SESSION_PEPPER" (New-RandomSecret 64) }
+
+  $env:X_MASTER_ADMIN_PASSWORD = $AdminPassword
+  $hash = (& $Node (Join-Path $RouterDir "tools\hash-admin-password.mjs") 2>&1 | Out-String).Trim()
+  Remove-Item Env:X_MASTER_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+  Remove-Item Env:X_MASTER_CF_TOKEN -ErrorAction SilentlyContinue
+  Remove-Item Env:X_MASTER_COLLECTOR_SECRET -ErrorAction SilentlyContinue
+  if ($LASTEXITCODE -ne 0 -or -not $hash.StartsWith("pbkdf2-sha256$")) {
+    throw ("Could not hash Admin password: " + $hash)
+  }
+  Put-Secret "ADMIN_PASSWORD_HASH" $hash
+
+  $collectorWasGenerated = $false
+  if ($CollectorSecret) {
+    Put-Secret "COLLECTOR_SECRET" $CollectorSecret
+  } elseif ($existing -notcontains "COLLECTOR_SECRET") {
+    $CollectorSecret = New-RandomSecret 48
+    $collectorWasGenerated = $true
+    Put-Secret "COLLECTOR_SECRET" $CollectorSecret
+  }
+
+  Log "6/8" "Health check"
+  $rootUrl = "https://x-master-router.$subdomain.workers.dev"
+  $health = $null
+  for ($i=0; $i -lt 12; $i++) {
+    Start-Sleep -Seconds 1
+    try {
+      $health = Invoke-RestMethod -Uri ($rootUrl + "/api/health") -TimeoutSec 15
+      if ($health.ok) { break }
+    } catch {}
+  }
+  if (-not $health.ok) { throw "Master Router health check failed." }
+
+  Log "7/8" "Save local deployment result"
+  $state = [ordered]@{
+    ok = $true
+    version = "0.1.0"
+    master_root = $rootUrl
+    master_web = $rootUrl + "/"
+    d1_database_id = $dbId
+    collector_secret = $CollectorSecret
+    collector_secret_generated = $collectorWasGenerated
+  }
+
+  if ($OutputFile) {
+    $parent = Split-Path -Parent $OutputFile
+    if ($parent) { New-Item -ItemType Directory -Force $parent | Out-Null }
+    [IO.File]::WriteAllText($OutputFile, ($state | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
+  }
+
+  Log "8/8" "MASTER READY"
+  Write-Host ($state | ConvertTo-Json -Depth 5)
+}
+finally {
+  Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
+  Remove-Item Env:CLOUDFLARE_API_TOKEN -ErrorAction SilentlyContinue
+  Remove-Item Env:X_MASTER_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+}

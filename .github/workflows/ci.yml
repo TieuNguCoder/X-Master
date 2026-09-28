@@ -1,0 +1,125 @@
+name: X-Master CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: master-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: npm install
+
+      - name: Syntax
+        run: npm run check
+
+      - name: Security tests
+        run: node test/security.test.mjs
+
+      - name: UI/schema contract
+        run: node test/contract.test.mjs
+
+      - name: Render and syntax-check Child Worker
+        working-directory: .
+        run: |
+          node tools/render-child-worker.mjs
+          node --check .tmp-child-worker.mjs
+
+      - name: Wrangler dry run
+        run: |
+          cp wrangler.example.jsonc wrangler.jsonc
+          sed -i 's/REPLACE_WITH_D1_DATABASE_ID/00000000-0000-0000-0000-000000000000/' wrangler.jsonc
+          npx wrangler deploy --dry-run --config wrangler.jsonc
+
+
+      - name: Live local Router + D1 smoke
+        run: |
+          HASH=$(node tools/hash-admin-password.mjs master-test-password)
+          cat > .dev.vars <<EOF
+          MASTER_KEY="smoke-master-key"
+          SESSION_PEPPER="smoke-session-pepper"
+          ADMIN_PASSWORD_HASH="$HASH"
+          COLLECTOR_SECRET="collector-smoke-secret"
+          EOF
+
+          npx wrangler d1 execute x-master --local --file schema.sql --config wrangler.jsonc
+          npx wrangler dev --local --port 8799 --config wrangler.jsonc > ../wrangler-local.log 2>&1 &
+          PID=$!
+
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8799/api/health >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" != "1" ]; then
+            cat ../wrangler-local.log
+            kill $PID || true
+            exit 1
+          fi
+
+          node test/local-live-smoke.mjs
+          CODE=$?
+          kill $PID || true
+          wait $PID || true
+          if [ "$CODE" != "0" ]; then
+            cat ../wrangler-local.log
+            exit $CODE
+          fi
+
+
+      - name: Live generated Child Web smoke
+        run: |
+          cat > ../.tmp-child-wrangler.jsonc <<EOF
+          {
+            "name": "x-master-child-smoke",
+            "main": ".tmp-child-worker.mjs",
+            "compatibility_date": "2026-09-18",
+            "vars": {
+              "CHILD_ID": "ch_smoke",
+              "MASTER_ROOT": "http://127.0.0.1:8800",
+              "CHILD_SECRET": "child-secret"
+            }
+          }
+          EOF
+
+          node ../tools/fake-child-master.mjs > ../fake-master.log 2>&1 &
+          MASTER_PID=$!
+          npx wrangler dev --local --port 8801 --config ../.tmp-child-wrangler.jsonc > ../child-worker.log 2>&1 &
+          CHILD_PID=$!
+
+          cleanup() {
+            kill $CHILD_PID >/dev/null 2>&1 || true
+            kill $MASTER_PID >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8801/health >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" != "1" ]; then
+            cat ../fake-master.log
+            cat ../child-worker.log
+            exit 1
+          fi
+
+          node ../tools/child-live-smoke.mjs
