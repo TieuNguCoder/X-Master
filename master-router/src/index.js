@@ -866,6 +866,32 @@ async function deleteChild(env, admin, childId) {
   return { deleted: true };
 }
 
+async function adminTestXAccount(env, admin, accountId) {
+  const account = await env.DB.prepare(
+    "SELECT a.*,c.id AS child_id,c.name AS child_name FROM x_accounts a JOIN children c ON c.id=a.child_id WHERE a.id=?"
+  ).bind(accountId).first();
+  if (!account) throw Object.assign(new Error("x_account_not_found"), { status: 404 });
+
+  let secrets = {};
+  if (account.encrypted_json) {
+    secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
+  }
+
+  const text = "X-Master connection test " + new Date().toISOString();
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
+  await audit(env, "admin", admin.id, "x_account.test_posted", "x_account", account.id, {
+    buffer_post_id: post.id,
+    buffer_status: post.status || null,
+    child_id: account.child_id
+  });
+
+  return {
+    posted: true,
+    account: { id: account.id, display_name: account.display_name, child_id: account.child_id, child_name: account.child_name },
+    post: { id: post.id, status: post.status || null }
+  };
+}
+
 async function requireCollector(env, request) {
   const provided = request.headers.get("x-collector-secret") || "";
   if (!provided || !timingSafeEqual(provided, env.COLLECTOR_SECRET)) {
@@ -1116,6 +1142,11 @@ async function handleApi(request, env, ctx) {
     }
     if (childMatch && request.method === "DELETE") {
       return json(await deleteChild(env, admin, childMatch[1]));
+    }
+
+    const adminTestMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)\/test-post$/);
+    if (adminTestMatch && request.method === "POST") {
+      return json(await adminTestXAccount(env, admin, adminTestMatch[1]));
     }
 
     if (path === "/api/admin/audit" && request.method === "GET") {
