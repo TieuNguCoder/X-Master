@@ -232,6 +232,40 @@ function extractSourceUrls(text) {
   return String(text || "").match(/https?:\/\/[^\s<>()]+/g) || [];
 }
 
+function accountPostLanguage(secrets) {
+  const value = String(secrets?.post_language || "en-US").trim();
+  return value.slice(0, 80) || "en-US";
+}
+
+function languageInstruction(value) {
+  const code = String(value || "en-US").trim() || "en-US";
+  const names = {
+    "en-US": "English (United States)",
+    "en-GB": "English (United Kingdom)",
+    "vi-VN": "Vietnamese",
+    "ja-JP": "Japanese",
+    "ko-KR": "Korean",
+    "zh-CN": "Simplified Chinese",
+    "zh-TW": "Traditional Chinese",
+    "es-ES": "Spanish",
+    "pt-BR": "Portuguese (Brazil)",
+    "fr-FR": "French",
+    "de-DE": "German",
+    "id-ID": "Indonesian",
+    "th-TH": "Thai",
+    "ru-RU": "Russian",
+    "tr-TR": "Turkish",
+    "hi-IN": "Hindi",
+    "ar-SA": "Arabic"
+  };
+  const name = names[code] || code;
+  return {
+    code,
+    name,
+    rule: "TARGET LANGUAGE: " + name + " (" + code + "). Write the entire post naturally for readers of this language. Translate SOURCE content as needed. Keep URLs, @usernames, ticker symbols, brand/project names, and proper nouns unchanged when translation would be unnatural. Hashtags should suit the target audience/language, though universal topic hashtags may remain in English."
+  };
+}
+
 function rewritePrompt(text, account) {
   const sourceText = String(text || "").trim();
   if (!sourceText) throw Object.assign(new Error("empty_source_text"), { status: 400 });
@@ -240,11 +274,12 @@ function rewritePrompt(text, account) {
   const mode = account.content_mode === "airdrop" ? "airdrop" : "news";
   const maxChars = premium ? 1600 : 275;
   const urls = extractSourceUrls(sourceText);
+  const language = languageInstruction(account.post_language || "en-US");
 
   const universal = [
     "You are rewriting a Telegram source post into a ready-to-publish X post.",
     "Use ONLY facts present in SOURCE. Never invent rewards, amounts, token prices, dates, deadlines, eligibility, partnerships, quotes, statistics, links, or guarantees.",
-    "Preserve the source language unless the source is clearly mixed or a natural English rendering is required.",
+    language.rule,
     "Do not mention Telegram, rewriting, AI, or the source.",
     "Do not use markdown tables or code fences.",
     "Keep every important URL from SOURCE exactly unchanged.",
@@ -508,7 +543,8 @@ async function processAccountRoute(env, eventId, account, sourceText) {
       secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
     }
     const provider = accountAiProvider(secrets);
-    const rewritten = await rewriteWithProvider(provider, secrets, sourceText, account);
+    const accountWithLanguage = { ...account, post_language: accountPostLanguage(secrets) };
+    const rewritten = await rewriteWithProvider(provider, secrets, sourceText, accountWithLanguage);
     const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, rewritten);
 
     await env.DB.prepare(
@@ -696,6 +732,7 @@ async function listXAccounts(env, childId) {
     let deepseekConfigured = false;
     let bufferConfigured = false;
     let aiProvider = "gemini_paid";
+    let postLanguage = "en-US";
     let settingsCorrupt = false;
     if (row.encrypted_json) {
       try {
@@ -704,6 +741,7 @@ async function listXAccounts(env, childId) {
         deepseekConfigured = Boolean(secrets.deepseek_api_key);
         bufferConfigured = Boolean(secrets.buffer_api_key);
         aiProvider = accountAiProvider(secrets);
+        postLanguage = accountPostLanguage(secrets);
       } catch {
         settingsCorrupt = true;
       }
@@ -723,6 +761,7 @@ async function listXAccounts(env, childId) {
       x_premium: Boolean(row.x_premium),
       enabled: Boolean(row.enabled),
       ai_provider: aiProvider,
+      post_language: postLanguage,
       ai_configured: aiProvider === "deepseek_paid" ? deepseekConfigured : geminiConfigured,
       gemini_configured: geminiConfigured,
       deepseek_configured: deepseekConfigured,
@@ -830,6 +869,8 @@ async function saveXAccount(env, child, body, accountId = null) {
   const aiKey = String(body.ai_api_key || body.gemini_api_key || "").trim();
   const buffer = String(body.buffer_api_key || "").trim();
   secrets.ai_provider = aiProvider;
+  const requestedLanguage = String(body.post_language || secrets.post_language || "en-US").trim().slice(0, 80) || "en-US";
+  secrets.post_language = requestedLanguage;
   if (aiKey) {
     if (aiProvider === "deepseek_paid") secrets.deepseek_api_key = aiKey;
     else secrets.gemini_api_key = aiKey;
@@ -872,6 +913,7 @@ async function saveXAccount(env, child, body, accountId = null) {
     x_handle: xHandle,
     source_count: sourceIds.length,
     ai_provider: aiProvider,
+    post_language: requestedLanguage,
     ai_updated: Boolean(aiKey),
     buffer_updated: Boolean(buffer),
     buffer_channel_id: bufferChannelId,
@@ -1174,7 +1216,7 @@ async function adminTestGemini(env, admin, accountId) {
     provider,
     secrets,
     "X-Master AI connection test. Rewrite this into a short X post.",
-    account
+    { ...account, post_language: accountPostLanguage(secrets) }
   );
   await audit(env, "admin", admin.id, "x_account.ai_test_ok", "x_account", account.id, {
     child_id: account.child_id,
@@ -1194,7 +1236,7 @@ async function adminTestFullPipeline(env, admin, accountId) {
     provider,
     secrets,
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
-    account
+    { ...account, post_language: accountPostLanguage(secrets) }
   );
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
@@ -1436,7 +1478,8 @@ async function ingestEvent(env, request, ctx) {
           model: "gemini-3.1-flash-lite",
           text: sourceText,
           content_mode: account.content_mode || "news",
-          x_premium: Boolean(account.x_premium)
+          x_premium: Boolean(account.x_premium),
+          post_language: accountPostLanguage(secrets)
         });
       }
     } else {
