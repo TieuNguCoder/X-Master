@@ -19,7 +19,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 APP_NAME = "X-Master"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 
 ANSI_RE = re.compile(r"\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*[@-~])")
 
@@ -109,9 +109,22 @@ def save_secrets(value: dict):
     (data_dir() / "secrets.dat").write_text(protect(raw), encoding="utf-8")
 
 
+HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.1.2"
+)
+
+
 def http_json(url: str, method: str = "GET", body=None, headers=None, timeout=20):
     data = None if body is None else json.dumps(body).encode("utf-8")
-    req_headers = {"accept": "application/json", **(headers or {})}
+    req_headers = {
+        "accept": "application/json",
+        "user-agent": HTTP_USER_AGENT,
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        **(headers or {}),
+    }
     if data is not None:
         req_headers["content-type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
@@ -126,6 +139,8 @@ def http_json(url: str, method: str = "GET", body=None, headers=None, timeout=20
         except Exception:
             payload = {"error": raw or str(exc)}
         return exc.code, payload
+    except urllib.error.URLError as exc:
+        return 0, {"error": "network_error", "detail": str(getattr(exc, "reason", exc))}
 
 
 async def run_collector():
@@ -170,7 +185,19 @@ async def run_collector():
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram StringSession is not authorized.")
 
-    await sync_sources()
+    startup_synced = False
+    for attempt in range(1, 7):
+        try:
+            await sync_sources()
+            startup_synced = True
+            break
+        except Exception as exc:
+            log(f"Initial source sync failed attempt={attempt}/6: {exc}")
+            if attempt < 6:
+                await asyncio.sleep(min(5 * attempt, 20))
+
+    if not startup_synced:
+        log("Collector connected to Telegram, but Master source sync is unavailable. Keeping Collector alive and retrying every 60 seconds.")
 
     @client.on(events.NewMessage())
     async def on_message(event):
