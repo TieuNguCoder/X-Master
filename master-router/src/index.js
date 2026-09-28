@@ -1651,6 +1651,8 @@ async function handleApi(request, env, ctx) {
 export const __test = {
   ensureWorkersSubdomain,
   deployChildWorker,
+  rewritePrompt,
+  cleanAiOutput,
   geminiRewrite,
   deepseekRewrite,
   bufferCreateNow
