@@ -109,3 +109,23 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_children_status ON children(status);
 CREATE INDEX IF NOT EXISTS idx_child_sources_source ON child_sources(source_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS ingest_events (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  external_id TEXT,
+  text_content TEXT,
+  media_json TEXT,
+  routed_children_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'accepted',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_dedupe
+ON ingest_events(source_id, external_id)
+WHERE external_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ingest_created
+ON ingest_events(created_at DESC);
