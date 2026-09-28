@@ -3,7 +3,7 @@ export function renderChildWorkerSource() {
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...headers }
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers }
   });
 }
 
@@ -118,7 +118,16 @@ async function masterFetch(env, path, init = {}) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/health") return json({ ok: true, child_id: env.CHILD_ID, master: Boolean(env.MASTER_ROOT) });
+    if (url.pathname === "/health") {
+      try {
+        const r = await masterFetch(env, "/internal/child/health", { method: "GET" });
+        const data = await r.json().catch(() => ({}));
+        const ok = r.ok && data.ok === true && data.child_id === env.CHILD_ID;
+        return json({ ok, child_id: env.CHILD_ID, master: ok }, ok ? 200 : 503);
+      } catch {
+        return json({ ok: false, child_id: env.CHILD_ID, master: false }, 503);
+      }
+    }
     if (request.method === "GET" && url.pathname === "/") {
       return new Response(childPage(), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
@@ -142,7 +151,7 @@ export default {
         body: request.method === "GET" ? undefined : await request.text(),
         headers: { "x-child-session": session }
       });
-      return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json; charset=utf-8" } });
+      return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
     }
     return new Response("Not found", { status: 404 });
   }
