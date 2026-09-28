@@ -228,6 +228,138 @@ async function bufferXChannels(apiKey) {
   return channels;
 }
 
+async function geminiRewrite(apiKey, text, account) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("gemini_api_key_missing");
+  const sourceText = String(text || "").trim();
+  if (!sourceText) throw new Error("empty_source_text");
+
+  const maxChars = account.x_premium ? 1800 : 260;
+  const modeGuide = account.content_mode === "airdrop"
+    ? "Style: concise crypto/airdrop update. Keep only facts present in the source. Never invent eligibility, rewards, dates, links, prices, or guarantees."
+    : "Style: concise news update. Keep only facts present in the source. Never invent facts, numbers, names, dates, links, quotes, or conclusions.";
+
+  const prompt = [
+    "Rewrite the Telegram post below as a standalone X post.",
+    modeGuide,
+    "Preserve the source language unless a natural translation is necessary.",
+    "Do not mention Telegram or that this is a rewrite.",
+    "Do not add markdown fences or commentary.",
+    "Make the wording distinct rather than copying sentences.",
+    "Maximum " + maxChars + " characters.",
+    "",
+    "SOURCE:",
+    sourceText
+  ].join("\n");
+
+  const response = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": key
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.8,
+          maxOutputTokens: account.x_premium ? 900 : 220
+        }
+      })
+    }
+  );
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = body?.error?.message || ("HTTP " + response.status);
+    throw new Error("gemini:" + detail);
+  }
+
+  let output = (body?.candidates?.[0]?.content?.parts || [])
+    .map((part) => String(part?.text || ""))
+    .join("")
+    .trim();
+
+  output = output.replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
+  if (!output) throw new Error("gemini:empty_response");
+
+  if (output.length > maxChars) {
+    output = output.slice(0, Math.max(1, maxChars - 1)).trimEnd() + "…";
+  }
+  return output;
+}
+
+async function bufferCreateNow(apiKey, channelId, text) {
+  const key = String(apiKey || "").trim();
+  const channel = String(channelId || "").trim();
+  if (!key) throw new Error("buffer_api_key_missing");
+  if (!channel) throw new Error("buffer_channel_id_missing");
+
+  const query = `mutation CreatePost {
+    createPost(input: {
+      text: ${JSON.stringify(String(text || ""))}
+      channelId: ${JSON.stringify(channel)}
+      schedulingType: automatic
+      mode: shareNow
+      aiAssisted: true
+    }) {
+      __typename
+      ... on PostActionSuccess {
+        post { id text status dueAt }
+      }
+      ... on MutationError {
+        message
+      }
+    }
+  }`;
+
+  const data = await bufferGraphql(key, query);
+  const result = data?.createPost;
+  if (!result?.post?.id) {
+    throw new Error("buffer:" + (result?.message || result?.__typename || "create_post_failed"));
+  }
+  return result.post;
+}
+
+async function processAccountRoute(env, eventId, account, sourceText) {
+  try {
+    let secrets = {};
+    if (account.encrypted_json) {
+      secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
+    }
+    const rewritten = await geminiRewrite(secrets.gemini_api_key, sourceText, account);
+    const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, rewritten);
+
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='posted',error=NULL WHERE event_id=? AND account_id=?"
+    ).bind(eventId, account.id).run();
+
+    await audit(env, "system", "router", "x_account.posted", "x_account", account.id, {
+      event_id: eventId,
+      buffer_post_id: post.id,
+      buffer_status: post.status || null,
+      child_id: account.child_id,
+      source_length: String(sourceText || "").length,
+      output_length: rewritten.length
+    });
+  } catch (error) {
+    const detail = safeError(error);
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
+    ).bind(detail, eventId, account.id).run().catch(() => {});
+    await audit(env, "system", "router", "x_account.post_failed", "x_account", account.id, {
+      event_id: eventId,
+      child_id: account.child_id,
+      error: detail
+    }).catch(() => {});
+  }
+}
+
+async function processEventRoutes(env, eventId, routed, sourceText) {
+  await Promise.all(routed.map((account) => processAccountRoute(env, eventId, account, sourceText)));
+}
+
 async function preflightInfra(infra) {
   const checks = [];
 
@@ -767,7 +899,7 @@ async function collectorSources(env) {
   return result.results || [];
 }
 
-async function ingestEvent(env, request) {
+async function ingestEvent(env, request, ctx) {
   await requireCollector(env, request);
   const body = await readJson(request);
   const source = body.source || {};
@@ -784,7 +916,8 @@ async function ingestEvent(env, request) {
   if (!matched) throw Object.assign(new Error("source_not_registered"), { status: 404 });
 
   const routedResult = await env.DB.prepare(
-    `SELECT a.id,a.display_name,a.x_handle,a.child_id,c.name AS child_name,c.web_url
+    `SELECT a.id,a.display_name,a.x_handle,a.child_id,a.encrypted_json,a.buffer_channel_id,
+            a.content_mode,a.x_premium,c.name AS child_name,c.web_url
        FROM x_accounts a
        JOIN x_account_sources xs ON xs.account_id=a.id
        JOIN children c ON c.id=a.child_id
@@ -820,8 +953,12 @@ async function ingestEvent(env, request) {
   for (const account of routed) {
     await env.DB.prepare(
       "INSERT OR IGNORE INTO ingest_account_routes(event_id,account_id,status) VALUES(?,?,?)"
-    ).bind(eventId, account.id, "accepted").run();
+    ).bind(eventId, account.id, "queued").run();
   }
+
+  const processing = processEventRoutes(env, eventId, routed, String(body.text || ""));
+  if (ctx?.waitUntil) ctx.waitUntil(processing);
+  else await processing;
 
   await audit(env, "collector", "local", "ingest.accepted", "source", matched.id, {
     event_id: eventId,
@@ -845,7 +982,7 @@ async function ingestEvent(env, request) {
   };
 }
 
-async function handleApi(request, env) {
+async function handleApi(request, env, ctx) {
   await requireBindings(env);
   const url = new URL(request.url);
   const path = url.pathname;
@@ -860,7 +997,7 @@ async function handleApi(request, env) {
   }
 
   if (path === "/ingest" && request.method === "POST") {
-    return json(await ingestEvent(env, request), 202);
+    return json(await ingestEvent(env, request, ctx), 202);
   }
 
   if (path === "/api/health" && request.method === "GET") {
@@ -1016,11 +1153,11 @@ export const __test = {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/") || url.pathname === "/ingest" || url.pathname.startsWith("/collector/")) {
-        return await handleApi(request, env);
+        return await handleApi(request, env, ctx);
       }
       if (env.ASSETS) return env.ASSETS.fetch(request);
       return new Response("X-Master Router", { status: 200 });
