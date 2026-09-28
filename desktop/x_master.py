@@ -12,6 +12,7 @@ import threading
 import time
 import tkinter as tk
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from ctypes import wintypes
