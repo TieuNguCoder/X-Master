@@ -23,6 +23,12 @@ function Log([string]$Step,[string]$Message) {
   Write-Host ("[" + $Step + "] " + $Message)
 }
 
+function Remove-Ansi([string]$Text) {
+  if ($null -eq $Text) { return "" }
+  $esc = [char]27
+  return [regex]::Replace($Text, [regex]::Escape([string]$esc) + '\[[0-?]*[ -/]*[@-~]', "")
+}
+
 function New-RandomSecret([int]$Bytes = 48) {
   if ($Bytes -lt 16) { throw "Random secret size must be at least 16 bytes." }
   $data = New-Object byte[] $Bytes
@@ -51,6 +57,8 @@ if ($RuntimeSelfTest) {
   if ([Convert]::FromBase64String($a).Length -ne 48) { throw "Random secret length self-test failed." }
   $testId = Get-D1Id ([pscustomobject]@{ database_id = "db-test-id" })
   if ($testId -ne "db-test-id") { throw "D1 id compatibility self-test failed." }
+  $ansiSample = ([char]27).ToString() + "[33mWARN" + ([char]27).ToString() + "[0m"
+  if ((Remove-Ansi $ansiSample) -ne "WARN") { throw "ANSI sanitizer self-test failed." }
   Write-Host ("RUNTIME SELF TEST PASS | WindowsPowerShell=" + $PSVersionTable.PSVersion.ToString())
   exit 0
 }
@@ -98,10 +106,13 @@ function Cf([string]$Method,[string]$Path,[object]$Body = $null) {
 }
 
 function Ensure-Subdomain {
+  $lastError = ""
   try {
     $current = Cf "GET" "/workers/subdomain"
     if ($current.success -and $current.result.subdomain) { return [string]$current.result.subdomain }
-  } catch {}
+  } catch {
+    $lastError = $_.Exception.Message
+  }
 
   $tail = ($AccountId.ToLowerInvariant() -replace '[^a-z0-9]','')
   if ($tail.Length -gt 10) { $tail = $tail.Substring($tail.Length - 10) }
@@ -111,13 +122,16 @@ function Ensure-Subdomain {
       $candidate = "xmaster-$tail$suffix"
       $created = Cf "PUT" "/workers/subdomain" @{ subdomain = $candidate }
       if ($created.success -and $created.result.subdomain) { return [string]$created.result.subdomain }
-    } catch {}
+    } catch {
+      $lastError = $_.Exception.Message
+    }
   }
-  throw "Could not configure workers.dev subdomain."
+  $suffix = if ($lastError) { " Last error: " + $lastError } else { "" }
+  throw ("Could not configure workers.dev subdomain." + $suffix)
 }
 
 function List-D1 {
-  $raw = (Wrangler d1 list --json 2>&1 | Out-String)
+  $raw = Remove-Ansi (Wrangler d1 list --json 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0) { throw ("Could not list D1: " + $raw.Trim()) }
   $start = $raw.IndexOf("[")
   $end = $raw.LastIndexOf("]")
@@ -127,12 +141,20 @@ function List-D1 {
 
 function Put-Secret([string]$Name,[string]$Value) {
   if (-not $Value) { throw "Secret value missing: $Name" }
-  $Value | Wrangler secret put $Name --config $Config
-  if ($LASTEXITCODE -ne 0) { throw "Could not set Worker secret: $Name" }
+
+  if ($UseBundled) {
+    $Value | & $Node $BundledWranglerJs secret put $Name --config $Config
+    $code = $LASTEXITCODE
+  } else {
+    $Value | & npx --yes "wrangler@$WranglerVersion" secret put $Name --config $Config
+    $code = $LASTEXITCODE
+  }
+
+  if ($code -ne 0) { throw "Could not set Worker secret: $Name" }
 }
 
 function Secret-Names {
-  $raw = (Wrangler secret list --config $Config --format json 2>&1 | Out-String)
+  $raw = Remove-Ansi (Wrangler secret list --config $Config --format json 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0) {
     throw ("Could not list Worker secrets. Existing encryption keys were NOT changed. Wrangler: " + $raw.Trim())
   }
