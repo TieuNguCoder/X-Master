@@ -1,0 +1,42 @@
+name: X-Master CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: master-router
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: npm install
+
+      - name: Syntax
+        run: npm run check
+
+      - name: Security tests
+        run: node test/security.test.mjs
+
+      - name: UI/schema contract
+        run: node test/contract.test.mjs
+
+      - name: Render and syntax-check Child Worker
+        working-directory: .
+        run: |
+          node tools/render-child-worker.mjs
+          node --check .tmp-child-worker.mjs
+
+      - name: Wrangler dry run
+        run: |
+          cp wrangler.example.jsonc wrangler.jsonc
+          sed -i 's/REPLACE_WITH_D1_DATABASE_ID/00000000-0000-0000-0000-000000000000/' wrangler.jsonc
+          npx wrangler deploy --dry-run --config wrangler.jsonc
