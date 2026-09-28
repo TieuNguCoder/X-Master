@@ -79,3 +79,47 @@ jobs:
             cat ../wrangler-local.log
             exit $CODE
           fi
+
+
+      - name: Live generated Child Web smoke
+        run: |
+          cat > ../.tmp-child-wrangler.jsonc <<EOF
+          {
+            "name": "x-master-child-smoke",
+            "main": ".tmp-child-worker.mjs",
+            "compatibility_date": "2026-09-18",
+            "vars": {
+              "CHILD_ID": "ch_smoke",
+              "MASTER_ROOT": "http://127.0.0.1:8800",
+              "CHILD_SECRET": "child-secret"
+            }
+          }
+          EOF
+
+          node ../tools/fake-child-master.mjs > ../fake-master.log 2>&1 &
+          MASTER_PID=$!
+          npx wrangler dev --local --port 8801 --config ../.tmp-child-wrangler.jsonc > ../child-worker.log 2>&1 &
+          CHILD_PID=$!
+
+          cleanup() {
+            kill $CHILD_PID >/dev/null 2>&1 || true
+            kill $MASTER_PID >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8801/health >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" != "1" ]; then
+            cat ../fake-master.log
+            cat ../child-worker.log
+            exit 1
+          fi
+
+          node ../tools/child-live-smoke.mjs
