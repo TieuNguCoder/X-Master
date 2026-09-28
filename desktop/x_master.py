@@ -143,6 +143,76 @@ def http_json(url: str, method: str = "GET", body=None, headers=None, timeout=20
         return 0, {"error": "network_error", "detail": str(getattr(exc, "reason", exc))}
 
 
+def local_gemini_free_rewrite(job: dict) -> str:
+    api_key = str(job.get("api_key") or "").strip()
+    model = str(job.get("model") or "gemini-3.1-flash-lite").strip()
+    source_text = str(job.get("text") or "").strip()
+    if not api_key:
+        raise RuntimeError("gemini_api_key_missing")
+    if not source_text:
+        raise RuntimeError("empty_source_text")
+
+    premium = bool(job.get("x_premium"))
+    max_chars = 1800 if premium else 260
+    mode = str(job.get("content_mode") or "news")
+    if mode == "airdrop":
+        mode_guide = (
+            "Style: concise crypto/airdrop update. Keep only facts present in the source. "
+            "Never invent eligibility, rewards, dates, links, prices, or guarantees."
+        )
+    else:
+        mode_guide = (
+            "Style: concise news update. Keep only facts present in the source. "
+            "Never invent facts, numbers, names, dates, links, quotes, or conclusions."
+        )
+
+    prompt = "\n".join([
+        "Rewrite the Telegram post below as a standalone X post.",
+        mode_guide,
+        "Preserve the source language unless a natural translation is necessary.",
+        "Do not mention Telegram or that this is a rewrite.",
+        "Do not add markdown fences or commentary.",
+        "Make the wording distinct rather than copying sentences.",
+        f"Maximum {max_chars} characters.",
+        "",
+        "SOURCE:",
+        source_text,
+    ])
+
+    status, payload = http_json(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        + urllib.parse.quote(model, safe="")
+        + ":generateContent",
+        "POST",
+        {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.8,
+                "maxOutputTokens": 900 if premium else 220,
+            },
+        },
+        {"x-goog-api-key": api_key},
+        45,
+    )
+    if status != 200:
+        detail = (
+            (payload.get("error") or {}).get("message")
+            if isinstance(payload.get("error"), dict)
+            else payload.get("error")
+        ) or payload.get("detail") or f"HTTP {status}"
+        raise RuntimeError(str(detail))
+
+    candidates = payload.get("candidates") or []
+    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+    output = "".join(str(part.get("text") or "") for part in parts).strip()
+    output = output.strip(" \t\r\n\\"'“”")
+    if not output:
+        raise RuntimeError("empty_response")
+    if len(output) > max_chars:
+        output = output[: max(1, max_chars - 1)].rstrip() + "…"
+    return output
+
+
 async def run_collector():
     from telethon import TelegramClient, events
     from telethon.sessions import StringSession
@@ -216,6 +286,35 @@ async def run_collector():
         log(f"Telegram catalog synced: {payload.get('synced', 0)} joined channels")
         return catalog
 
+    async def process_local_ai_job(job: dict):
+        account_id = str(job.get("account_id") or "")
+        event_id = str(job.get("event_id") or "")
+        result = {"event_id": event_id, "account_id": account_id}
+        try:
+            output = await asyncio.to_thread(local_gemini_free_rewrite, job)
+            result["output"] = output
+            log(f"LOCAL_AI rewritten account={account_id} event={event_id} chars={len(output)}")
+        except Exception as exc:
+            result["error"] = str(exc)
+            log(f"LOCAL_AI failed account={account_id} event={event_id} error={exc}")
+
+        status, payload = await asyncio.to_thread(
+            http_json,
+            master_root + "/collector/local-ai-result",
+            "POST",
+            result,
+            {"x-collector-secret": collector_secret},
+            45,
+        )
+        if status == 200:
+            if payload.get("posted"):
+                post_id = (payload.get("post") or {}).get("id") or "-"
+                log(f"LOCAL_AI posted account={account_id} event={event_id} post={post_id}")
+            else:
+                log(f"LOCAL_AI result accepted account={account_id} event={event_id} error={payload.get('error') or '-'}")
+        else:
+            log(f"LOCAL_AI callback failed status={status} account={account_id} event={event_id} payload={payload}")
+
     client = TelegramClient(StringSession(session), api_id, api_hash)
     await client.connect()
     if not await client.is_user_authorized():
@@ -288,11 +387,14 @@ async def run_collector():
             if status in (200, 202):
                 routed_accounts = payload.get("routed_accounts")
                 routed_count = len(routed_accounts) if isinstance(routed_accounts, list) else 0
+                local_jobs = payload.get("local_ai_jobs") or []
                 log(
                     f"ROUTED chat={label} msg={event.message.id} "
                     f"children={payload.get('routed_children', 0)} accounts={routed_count} "
-                    f"event={payload.get('event_id', '-')}"
+                    f"local_ai={len(local_jobs)} event={payload.get('event_id', '-')}"
                 )
+                if local_jobs:
+                    await asyncio.gather(*(process_local_ai_job(job) for job in local_jobs))
             else:
                 log(f"FAILED ingest status={status} chat={label} msg={event.message.id} payload={payload}")
         except Exception as exc:
