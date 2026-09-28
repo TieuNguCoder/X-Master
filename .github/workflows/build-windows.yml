@@ -32,6 +32,7 @@ jobs:
           npm run check
           node test/security.test.mjs
           node test/contract.test.mjs
+          node test/provisioning-regression.test.mjs
           Pop-Location
           node tools/render-child-worker.mjs
           node --check .tmp-child-worker.mjs
@@ -50,6 +51,14 @@ jobs:
             $errors | ForEach-Object { Write-Host $_.Message -ForegroundColor Red }
             exit 1
           }
+
+      - name: Windows PowerShell 5.1 runtime compatibility
+        shell: pwsh
+        run: |
+          $ps51 = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+          if (-not (Test-Path $ps51)) { throw "Windows PowerShell 5.1 not found" }
+          & $ps51 -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "deploy\SETUP-MASTER.ps1" -RuntimeSelfTest
+          if ($LASTEXITCODE -ne 0) { throw "SETUP-MASTER.ps1 failed Windows PowerShell 5.1 runtime self-test" }
 
       - name: Install bundled Wrangler
         shell: pwsh
@@ -78,7 +87,7 @@ jobs:
       - name: Assemble portable package
         shell: pwsh
         run: |
-          $release = "release/X-Master-v0.1.0"
+          $release = "release/X-Master-v0.1.1"
           New-Item -ItemType Directory -Force $release | Out-Null
           Copy-Item dist/X-Master.exe $release/
           Copy-Item deploy $release/deploy -Recurse
@@ -100,7 +109,7 @@ jobs:
       - name: Run packaged EXE self-test
         shell: pwsh
         run: |
-          Push-Location release/X-Master-v0.1.0
+          Push-Location release/X-Master-v0.1.1
           $proc = Start-Process -FilePath ".\X-Master.exe" -ArgumentList "--self-test" -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "X-Master self-test failed with exit code $($proc.ExitCode)" }
           Pop-Location
@@ -108,33 +117,33 @@ jobs:
       - name: ZIP and extraction integrity test
         shell: pwsh
         run: |
-          Compress-Archive -Path release/X-Master-v0.1.0/* -DestinationPath release/X-Master-v0.1.0-Windows.zip -CompressionLevel Optimal -Force
+          Compress-Archive -Path release/X-Master-v0.1.1/* -DestinationPath release/X-Master-v0.1.1-Windows.zip -CompressionLevel Optimal -Force
           New-Item -ItemType Directory -Force release/verify | Out-Null
-          Expand-Archive release/X-Master-v0.1.0-Windows.zip release/verify -Force
+          Expand-Archive release/X-Master-v0.1.1-Windows.zip release/verify -Force
           if (-not (Test-Path release/verify/X-Master.exe)) { throw "ZIP missing X-Master.exe" }
           if (-not (Test-Path release/verify/deploy/SETUP-MASTER.ps1)) { throw "ZIP missing deploy script" }
           if (-not (Test-Path release/verify/master-router/web/index.html)) { throw "ZIP missing Master Web" }
-          Get-FileHash release/X-Master-v0.1.0-Windows.zip -Algorithm SHA256
+          Get-FileHash release/X-Master-v0.1.1-Windows.zip -Algorithm SHA256
 
       - name: Upload branch package
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: X-Master-v0.1.0-Windows
-          path: release/X-Master-v0.1.0-Windows.zip
+          name: X-Master-v0.1.1-Windows
+          path: release/X-Master-v0.1.1-Windows.zip
           if-no-files-found: error
 
-      - name: Publish v0.1.0 release
+      - name: Publish v0.1.1 release
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "x-master-v0.1.0"
+          $tag = "x-master-v0.1.1"
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "X-Master v0.1.0" --notes "Master Router foundation: one Owner web, central Sources, isolated password-protected Child Web deployment, encrypted infrastructure secrets, and local Telegram Collector."
+            gh release create $tag --title "X-Master v0.1.1" --notes "Windows runtime hotfix and hardening: PowerShell 5.1 compatible secret generation, fail-safe secret preservation, clean UTF-8 deploy logs, safe Collector secret recovery, workers.dev creation for new child accounts, and orphan Child Worker rollback."
             if ($LASTEXITCODE -ne 0) { throw "Could not create release" }
           }
-          gh release upload $tag release/X-Master-v0.1.0-Windows.zip --clobber
+          gh release upload $tag release/X-Master-v0.1.1-Windows.zip --clobber
           if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset" }
