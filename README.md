@@ -53,6 +53,17 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — DONE
 - Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
 
+## v0.2.4 AI provider routing
+
+Each X account can now choose one AI provider independently:
+
+- **Gemini Free** — uses `gemini-3.1-flash-lite` and runs from the Windows Collector/owner PC, avoiding Cloudflare egress-location restrictions;
+- **Gemini Paid** — uses the paid Gemini API from the Master Router;
+- **DeepSeek Paid** — uses the official DeepSeek API with `deepseek-flash` from the Master Router;
+- provider-specific API keys are encrypted per account;
+- Gemini Free jobs are returned securely to the authenticated Collector and posted back to Master after local rewriting;
+- existing Child Webs can be upgraded in place from Master Web with **Update Child Web**, preserving URL/account data.
+
 ## v0.2.3 Live failure diagnostics
 
 - Master Logs now render `details_json`, including the exact error stored by `x_account.post_failed`;
