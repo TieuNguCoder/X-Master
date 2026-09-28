@@ -154,31 +154,80 @@ def local_gemini_free_rewrite(job: dict) -> str:
         raise RuntimeError("empty_source_text")
 
     premium = bool(job.get("x_premium"))
-    max_chars = 1800 if premium else 260
-    mode = str(job.get("content_mode") or "news")
-    if mode == "airdrop":
-        mode_guide = (
-            "Style: concise crypto/airdrop update. Keep only facts present in the source. "
-            "Never invent eligibility, rewards, dates, links, prices, or guarantees."
-        )
-    else:
-        mode_guide = (
-            "Style: concise news update. Keep only facts present in the source. "
-            "Never invent facts, numbers, names, dates, links, quotes, or conclusions."
-        )
+    mode = "airdrop" if str(job.get("content_mode") or "news") == "airdrop" else "news"
+    max_chars = 1600 if premium else 275
+    urls = re.findall(r"https?://[^\\s<>()]+", source_text)
 
-    prompt = "\n".join([
-        "Rewrite the Telegram post below as a standalone X post.",
-        mode_guide,
-        "Preserve the source language unless a natural translation is necessary.",
-        "Do not mention Telegram or that this is a rewrite.",
-        "Do not add markdown fences or commentary.",
-        "Make the wording distinct rather than copying sentences.",
+    universal = [
+        "You are rewriting a Telegram source post into a ready-to-publish X post.",
+        "Use ONLY facts present in SOURCE. Never invent rewards, amounts, token prices, dates, deadlines, eligibility, partnerships, quotes, statistics, links, or guarantees.",
+        "Preserve the source language unless the source is clearly mixed or a natural English rendering is required.",
+        "Do not mention Telegram, rewriting, AI, or the source.",
+        "Do not use markdown tables or code fences.",
+        "Keep every important URL from SOURCE exactly unchanged.",
+        "If SOURCE contains a URL, the final post MUST contain that URL.",
+        "End with 2 to 4 relevant hashtags based on facts/topics actually present in SOURCE.",
+        "Avoid generic spam hashtags such as #FollowBack, #Giveaway, #FreeMoney unless SOURCE explicitly supports them.",
+        "Return ONLY the final X post, with no explanation.",
         f"Maximum {max_chars} characters.",
-        "",
-        "SOURCE:",
-        source_text,
-    ])
+    ]
+
+    if mode == "airdrop" and not premium:
+        format_rules = [
+            "CONTENT MODE: AIRDROP — STANDARD X ACCOUNT.",
+            "The result MUST visibly look like an airdrop/opportunity post, not a news sentence.",
+            "Use this compact structure whenever the SOURCE provides the needed facts:",
+            "1) First line: one strong emoji + project/opportunity name + short hook.",
+            "2) Second line: reward/benefit in a compact form ONLY if SOURCE states one.",
+            "3) Put the main URL on its own line or directly after a short label such as 🔗 Link:.",
+            "4) Then 1 to 3 very short action steps, each starting with •, →, or ✅.",
+            "5) Final line: 2 to 4 hashtags.",
+            "Use light crypto-style emojis such as 🎁 🚀 ✅ 🔗 🪂 only where natural.",
+            "Do not add a fake reward, fake deadline, fake eligibility, or fake token symbol.",
+            "Prefer useful density over prose. Make it easy to scan in under five seconds.",
+        ]
+    elif mode == "airdrop" and premium:
+        format_rules = [
+            "CONTENT MODE: AIRDROP — PREMIUM/BLUE X ACCOUNT.",
+            "Create a polished, structured opportunity post with stronger editorial quality.",
+            "Use this structure when facts exist:",
+            "1) Headline/hook with project name and opportunity.",
+            "2) Compact summary of what users can get or why the opportunity matters.",
+            "3) Reward / Eligibility / Deadline ONLY for fields explicitly present in SOURCE.",
+            "4) Main URL clearly visible.",
+            "5) 2 to 5 numbered or bullet action steps.",
+            "6) One short natural CTA.",
+            "7) Final line: 2 to 4 relevant hashtags.",
+            "Use spacing and emojis to improve readability, but keep it professional rather than spammy.",
+        ]
+    elif mode == "news" and not premium:
+        format_rules = [
+            "CONTENT MODE: NEWS — STANDARD X ACCOUNT.",
+            "Do NOT write a dry one-sentence rewrite.",
+            "Use this compact structure:",
+            "1) First line: short headline/hook stating the key development.",
+            "2) Next 1 to 2 sentences: what happened and the most useful context available in SOURCE.",
+            "3) Include any important SOURCE URL clearly.",
+            "4) Final line: 2 to 4 relevant hashtags.",
+            "Write in a natural social-news voice: clear, energetic, factual, not sensational.",
+        ]
+    else:
+        format_rules = [
+            "CONTENT MODE: NEWS — PREMIUM/BLUE X ACCOUNT.",
+            "Write a polished mini news brief suitable for a serious X account.",
+            "Use this structure:",
+            "1) Strong but factual headline/hook.",
+            "2) Concise summary of the development.",
+            "3) Add useful context, implication, or why-it-matters ONLY when directly supported by SOURCE; do not speculate.",
+            "4) Preserve any important URL.",
+            "5) Finish with 2 to 4 relevant hashtags.",
+            "Use clean paragraph spacing. The tone should feel editorially finished, not robotic or overly promotional.",
+        ]
+
+    if urls:
+        format_rules.append("SOURCE URLs that must remain unchanged: " + " | ".join(urls))
+
+    prompt = "\n".join(universal + format_rules + ["", "SOURCE:", source_text])
 
     status, payload = http_json(
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -206,11 +255,61 @@ def local_gemini_free_rewrite(job: dict) -> str:
     candidates = payload.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
     output = "".join(str(part.get("text") or "") for part in parts).strip()
-    output = output.strip(" \\t\\r\\n\\\"'“”")
+    output = output.strip().strip("\\"'“”`")
     if not output:
         raise RuntimeError("empty_response")
+
+    existing_tags = re.findall(r"#[\\w]+", output, flags=re.UNICODE)
+    source_tags = re.findall(r"#[\\w]+", source_text, flags=re.UNICODE)
+    fallback = []
+    for tag in source_tags:
+        if tag.lower() not in [x.lower() for x in fallback]:
+            fallback.append(tag)
+        if len(fallback) >= 4:
+            break
+
+    lower = source_text.lower()
+    candidates_tags = ["#Airdrop", "#Web3"] if mode == "airdrop" else []
+    if mode == "news":
+        if "bitcoin" in lower or re.search(r"\\bbtc\\b", lower):
+            candidates_tags.append("#Bitcoin")
+        if "ethereum" in lower or re.search(r"\\beth\\b", lower):
+            candidates_tags.append("#Ethereum")
+        if "crypto" in lower:
+            candidates_tags.append("#Crypto")
+        if "web3" in lower:
+            candidates_tags.append("#Web3")
+        if "artificial intelligence" in lower or re.search(r"\\bai\\b", lower):
+            candidates_tags.append("#AI")
+        candidates_tags.extend(["#News", "#Update"])
+
+    for tag in candidates_tags:
+        if tag.lower() not in [x.lower() for x in fallback]:
+            fallback.append(tag)
+        if len(fallback) >= 2:
+            break
+
+    if len(existing_tags) < 2:
+        extras = [t for t in fallback if t.lower() not in [x.lower() for x in existing_tags]]
+        extras = extras[: max(0, 2 - len(existing_tags))]
+        if extras:
+            output = output.rstrip() + "\n\n" + " ".join(extras)
+
     if len(output) > max_chars:
-        output = output[: max(1, max_chars - 1)].rstrip() + "…"
+        tags = re.findall(r"#[\\w]+", output, flags=re.UNICODE)
+        if not tags:
+            tags = fallback[:2]
+        tag_line = " ".join(tags[-4:])
+        room = max(40, max_chars - len(tag_line) - 3)
+        body = re.sub(r"(?:\\s*#[\\w]+)+\\s*$", "", output, flags=re.UNICODE).strip()
+        if len(body) > room:
+            body = body[: room - 1].rstrip()
+            last_space = body.rfind(" ")
+            if last_space > int(room * 0.72):
+                body = body[:last_space]
+            body += "…"
+        output = body + "\n\n" + tag_line
+
     return output
 
 
