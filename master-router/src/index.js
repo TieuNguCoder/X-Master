@@ -228,32 +228,44 @@ async function bufferXChannels(apiKey) {
   return channels;
 }
 
-async function geminiRewrite(apiKey, text, account) {
-  const key = String(apiKey || "").trim();
-  if (!key) throw new Error("gemini_api_key_missing");
+function rewritePrompt(text, account) {
   const sourceText = String(text || "").trim();
-  if (!sourceText) throw new Error("empty_source_text");
-
+  if (!sourceText) throw Object.assign(new Error("empty_source_text"), { status: 400 });
   const maxChars = account.x_premium ? 1800 : 260;
   const modeGuide = account.content_mode === "airdrop"
     ? "Style: concise crypto/airdrop update. Keep only facts present in the source. Never invent eligibility, rewards, dates, links, prices, or guarantees."
     : "Style: concise news update. Keep only facts present in the source. Never invent facts, numbers, names, dates, links, quotes, or conclusions.";
+  return {
+    maxChars,
+    prompt: [
+      "Rewrite the Telegram post below as a standalone X post.",
+      modeGuide,
+      "Preserve the source language unless a natural translation is necessary.",
+      "Do not mention Telegram or that this is a rewrite.",
+      "Do not add markdown fences or commentary.",
+      "Make the wording distinct rather than copying sentences.",
+      "Maximum " + maxChars + " characters.",
+      "",
+      "SOURCE:",
+      sourceText
+    ].join("\n")
+  };
+}
 
-  const prompt = [
-    "Rewrite the Telegram post below as a standalone X post.",
-    modeGuide,
-    "Preserve the source language unless a natural translation is necessary.",
-    "Do not mention Telegram or that this is a rewrite.",
-    "Do not add markdown fences or commentary.",
-    "Make the wording distinct rather than copying sentences.",
-    "Maximum " + maxChars + " characters.",
-    "",
-    "SOURCE:",
-    sourceText
-  ].join("\n");
+function cleanAiOutput(output, maxChars) {
+  let text = String(output || "").trim().replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
+  if (!text) throw Object.assign(new Error("ai:empty_response"), { status: 502, expose: true });
+  if (text.length > maxChars) text = text.slice(0, Math.max(1, maxChars - 1)).trimEnd() + "…";
+  return text;
+}
+
+async function geminiRewrite(apiKey, text, account, model = "gemini-3.5-flash") {
+  const key = String(apiKey || "").trim();
+  if (!key) throw Object.assign(new Error("gemini_api_key_missing"), { status: 400 });
+  const { prompt, maxChars } = rewritePrompt(text, account);
 
   const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent",
     {
       method: "POST",
       headers: {
@@ -276,18 +288,52 @@ async function geminiRewrite(apiKey, text, account) {
     throw Object.assign(new Error("gemini:" + detail), { status: 502, expose: true });
   }
 
-  let output = (body?.candidates?.[0]?.content?.parts || [])
+  const output = (body?.candidates?.[0]?.content?.parts || [])
     .map((part) => String(part?.text || ""))
-    .join("")
-    .trim();
+    .join("");
+  return cleanAiOutput(output, maxChars);
+}
 
-  output = output.replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
-  if (!output) throw Object.assign(new Error("gemini:empty_response"), { status: 502, expose: true });
+async function deepseekRewrite(apiKey, text, account) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw Object.assign(new Error("deepseek_api_key_missing"), { status: 400 });
+  const { prompt, maxChars } = rewritePrompt(text, account);
 
-  if (output.length > maxChars) {
-    output = output.slice(0, Math.max(1, maxChars - 1)).trimEnd() + "…";
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: "Bearer " + key
+    },
+    body: JSON.stringify({
+      model: "deepseek-flash",
+      messages: [{ role: "user", content: prompt }],
+      thinking: { type: "disabled" },
+      temperature: 0.8,
+      max_tokens: account.x_premium ? 900 : 220
+    })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = body?.error?.message || body?.message || ("HTTP " + response.status);
+    throw Object.assign(new Error("deepseek:" + detail), { status: 502, expose: true });
   }
-  return output;
+  return cleanAiOutput(body?.choices?.[0]?.message?.content, maxChars);
+}
+
+function accountAiProvider(secrets) {
+  const provider = String(secrets?.ai_provider || "gemini_paid");
+  return ["gemini_free", "gemini_paid", "deepseek_paid"].includes(provider) ? provider : "gemini_paid";
+}
+
+async function rewriteWithProvider(provider, secrets, text, account) {
+  if (provider === "gemini_paid") {
+    return geminiRewrite(secrets.gemini_api_key, text, account, "gemini-3.5-flash");
+  }
+  if (provider === "deepseek_paid") {
+    return deepseekRewrite(secrets.deepseek_api_key, text, account);
+  }
+  throw Object.assign(new Error("gemini_free_requires_collector"), { status: 409, expose: true });
 }
 
 async function bufferCreateNow(apiKey, channelId, text) {
@@ -328,7 +374,8 @@ async function processAccountRoute(env, eventId, account, sourceText) {
     if (account.encrypted_json) {
       secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
     }
-    const rewritten = await geminiRewrite(secrets.gemini_api_key, sourceText, account);
+    const provider = accountAiProvider(secrets);
+    const rewritten = await rewriteWithProvider(provider, secrets, sourceText, account);
     const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, rewritten);
 
     await env.DB.prepare(
