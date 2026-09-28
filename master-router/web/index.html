@@ -12,7 +12,7 @@
     <div>
       <div class="eyebrow">X-MASTER</div>
       <h1>Master Router</h1>
-      <p>Sources → Child Webs → Tester</p>
+      <p>Telegram Catalog → Child Webs → X Accounts</p>
     </div>
     <div class="header-actions">
       <span id="healthBadge" class="badge muted">CHECKING</span>
@@ -37,7 +37,7 @@
     <section id="app" class="hidden">
       <nav class="tabs">
         <button class="tab active" data-tab="children">Child Webs</button>
-        <button class="tab" data-tab="sources">Sources</button>
+        <button class="tab" data-tab="sources">Telegram Catalog</button>
         <button class="tab" data-tab="audit">Logs</button>
       </nav>
 
@@ -85,13 +85,6 @@
                 </div>
               </fieldset>
 
-              <fieldset>
-                <legend>Sources cấp cho tester</legend>
-                <div id="sourceChecks" class="checks">
-                  <span class="muted">Chưa có Source.</span>
-                </div>
-              </fieldset>
-
               <div class="button-row">
                 <button type="button" id="preflightBtn" class="secondary">1. Test API</button>
                 <button type="submit">2. Deploy Child Web</button>
@@ -122,27 +115,17 @@
       </section>
 
       <section id="tab-sources" class="tabpage hidden">
-        <div class="grid">
-          <article class="panel">
-            <div class="eyebrow">SOURCE</div>
-            <h2>Thêm Telegram Source</h2>
-            <form id="sourceForm" class="stack">
-              <label>Title<input id="sourceTitle" placeholder="Crypto News A" required></label>
-              <div class="two">
-                <label>Username<input id="sourceUsername" placeholder="@channelname"></label>
-                <label>Channel ID<input id="sourceChannelId" placeholder="-100..."></label>
-              </div>
-              <button>+ Add Source</button>
-            </form>
-            <div id="sourceStatus" class="status"></div>
-          </article>
-
-          <article class="panel">
-            <div class="eyebrow">SOURCE CATALOG</div>
-            <h2>Sources</h2>
-            <div id="sourcesList" class="rows"></div>
-          </article>
-        </div>
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">TELEGRAM CATALOG</div>
+              <h2>Kênh Telegram đã join</h2>
+              <p class="muted">Danh sách này được Collector đồng bộ tự động. Tester chọn kênh riêng cho từng tài khoản X ở Web con.</p>
+            </div>
+            <button id="sourceRefreshBtn" class="ghost">Refresh</button>
+          </div>
+          <div id="sourcesList" class="rows"></div>
+        </article>
       </section>
 
       <section id="tab-audit" class="tabpage hidden">
