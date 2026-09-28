@@ -48,6 +48,7 @@ function renderChildren(){
       '<div class="meta"><span>X accounts: '+Number(c.account_count||0)+'/5</span><span>Telegram channels: '+Number(c.source_count||0)+'</span><span>Web: '+(c.web_url?'<a href="'+esc(c.web_url)+'" target="_blank" rel="noreferrer">'+esc(c.web_url)+'</a>':'-')+'</span></div>'+
       '<div class="rows" style="margin-top:12px">'+(accounts||'<div class="muted">Chưa có tài khoản X.</div>')+'</div>'+
       '<div class="actions">'+(c.web_url?'<button class="open-child" data-url="'+esc(c.web_url)+'">Open Child</button>':'')+
+      '<button class="update-child secondary" data-id="'+esc(c.id)+'">Update Child Web</button>'+
       '<button class="reset-pass secondary" data-id="'+esc(c.id)+'">Reset password</button>'+
       '<button class="toggle-child warn" data-id="'+esc(c.id)+'" data-status="'+esc(c.status)+'">'+(c.status==="paused"?"Resume":"Pause")+'</button>'+
       '<button class="delete-child danger" data-id="'+esc(c.id)+'">Delete</button></div></div>';
@@ -55,6 +56,7 @@ function renderChildren(){
   document.querySelectorAll(".test-gemini").forEach((b)=>b.onclick=()=>testGemini(b.dataset.id));
   document.querySelectorAll(".test-pipeline").forEach((b)=>b.onclick=()=>testPipeline(b.dataset.id));
   document.querySelectorAll(".test-account").forEach((b)=>b.onclick=()=>testAccountPost(b.dataset.id));
+  document.querySelectorAll(".update-child").forEach((b)=>b.onclick=()=>updateChildCode(b.dataset.id));
   document.querySelectorAll(".open-child").forEach((b)=>b.onclick=()=>window.open(b.dataset.url,"_blank"));
   document.querySelectorAll(".reset-pass").forEach((b)=>b.onclick=()=>resetPassword(b.dataset.id));
   document.querySelectorAll(".toggle-child").forEach((b)=>b.onclick=()=>toggleChild(b.dataset.id,b.dataset.status));
@@ -105,6 +107,15 @@ async function testAccountPost(id){
     toast("Đã gửi bài test. Buffer post: "+(result.post?.id||"-")+" · status="+(result.post?.status||"-"));
     await refresh();
   }catch(error){toast("Test đăng X lỗi: "+error.message);}
+}
+async function updateChildCode(id){
+  if(!confirm("Update code Web con tại chỗ? URL, password và dữ liệu account sẽ được giữ nguyên."))return;
+  try{
+    toast("Đang update Child Web...");
+    await api("/api/admin/children/"+encodeURIComponent(id)+"/update-code",{method:"POST",body:"{}"});
+    toast("Child Web đã update.");
+    await refresh();
+  }catch(error){toast("Update Child lỗi: "+error.message);}
 }
 async function resetPassword(id){const password=prompt("Password mới (tối thiểu 8 ký tự):");if(!password)return;try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({password})});toast("Đã đổi password. Session tester cũ đã bị revoke.");}catch(error){toast(error.message);}}
 async function toggleChild(id,status){const next=status==="paused"?"ready":"paused";try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({status:next})});await refresh();}catch(error){toast(error.message);}}
