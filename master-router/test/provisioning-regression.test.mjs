@@ -78,6 +78,49 @@ try {
   assert.equal(healthCalls, 12);
   assert.equal(deleteCalled, true, "orphan Child Worker must be deleted after health failure");
   console.log("child health failure rollback DELETE: PASS");
+
+  const postingCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    postingCalls.push({ url: String(url), init });
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      assert.equal(init.headers["x-goog-api-key"], "gemini-test-key");
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "Rewritten smoke post" }] } }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (String(url) === "https://api.buffer.com") {
+      const payload = JSON.parse(init.body);
+      assert.ok(payload.query.includes("mode: shareNow"));
+      assert.ok(payload.query.includes('channelId: "buffer-channel-smoke"'));
+      assert.ok(payload.query.includes("Rewritten smoke post"));
+      return new Response(JSON.stringify({
+        data: {
+          createPost: {
+            __typename: "PostActionSuccess",
+            post: { id: "post-smoke", text: "Rewritten smoke post", status: "sent", dueAt: null }
+          }
+        }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw new Error("unexpected posting fetch: " + url);
+  };
+
+  const rewritten = await __test.geminiRewrite(
+    "gemini-test-key",
+    "Original Telegram smoke post",
+    { content_mode: "news", x_premium: 0 }
+  );
+  assert.equal(rewritten, "Rewritten smoke post");
+
+  const post = await __test.bufferCreateNow(
+    "buffer-test-key",
+    "buffer-channel-smoke",
+    rewritten
+  );
+  assert.equal(post.id, "post-smoke");
+  assert.equal(post.status, "sent");
+  assert.equal(postingCalls.length, 2);
+  console.log("Gemini rewrite + Buffer shareNow posting: PASS");
 } finally {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;
