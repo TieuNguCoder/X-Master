@@ -759,6 +759,11 @@ async function handleApi(request, env) {
   throw Object.assign(new Error("not_found"), { status: 404 });
 }
 
+export const __test = {
+  ensureWorkersSubdomain,
+  deployChildWorker
+};
+
 export default {
   async fetch(request, env) {
     try {
