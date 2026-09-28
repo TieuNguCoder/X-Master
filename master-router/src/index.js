@@ -427,7 +427,9 @@ async function updateChild(env, request, admin, childId) {
   const body = await readJson(request);
 
   if (body.password !== undefined) {
-    const passwordHash = await createPasswordHash(String(body.password || ""));
+    const password = String(body.password || "");
+    if (password.length < 8) throw Object.assign(new Error("password_too_short"), { status: 400 });
+    const passwordHash = await createPasswordHash(password);
     await env.DB.prepare(
       "UPDATE children SET password_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(passwordHash, childId).run();
@@ -739,6 +741,11 @@ async function handleApi(request, env) {
 
   if (path.startsWith("/internal/child/")) {
     const child = await verifyChildCaller(env, request);
+
+    if (path === "/internal/child/health" && request.method === "GET") {
+      return json({ ok: true, child_id: child.id, status: child.status });
+    }
+
     if (child.status === "paused") throw Object.assign(new Error("child_paused"), { status: 403 });
 
     if (path === "/internal/child/login" && request.method === "POST") {
