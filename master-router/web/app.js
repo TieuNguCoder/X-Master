@@ -29,6 +29,11 @@ function renderSources(){
     '</small></div></div>'
   ).join("")||'<div class="muted">Chưa có kênh. Hãy chạy Collector để đồng bộ danh sách Telegram đã join.</div>';
 }
+function aiProviderLabel(provider){
+  if(provider==="gemini_free") return "Gemini Free";
+  if(provider==="deepseek_paid") return "DeepSeek Paid";
+  return "Gemini Paid";
+}
 function renderChildren(){
   $("#childrenList").innerHTML=state.children.map((c)=>{
     const statusClass=c.status==="ready"?"":c.status==="paused"?"paused":"error";
@@ -36,8 +41,8 @@ function renderChildren(){
       const channels=(a.sources||[]).map((s)=>'<span class="chip">'+esc(s.title)+'</span>').join("");
       return '<div class="row" style="align-items:flex-start"><div class="row-main"><strong>'+esc(a.display_name)+'</strong>'+
         (a.x_handle?' · @'+esc(a.x_handle):'')+'<br><small>'+(a.enabled?'RUNNING':'PAUSED')+' · Buffer '+(a.buffer_configured?'OK':'-')+
-        ' · Gemini '+(a.gemini_configured?'OK':'-')+'</small><div style="margin-top:4px"><small>Last post: '+esc(a.last_post_status||'none')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</small></div><div style="margin-top:6px">'+(channels||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
-        '<div class="actions" style="margin-top:8px"><button class="test-gemini secondary" data-id="'+esc(a.id)+'">Test Gemini</button><button class="test-pipeline secondary" data-id="'+esc(a.id)+'">Test full pipeline</button><button class="test-account secondary" data-id="'+esc(a.id)+'">Test đăng X</button></div></div></div>';
+        ' · AI '+esc(aiProviderLabel(a.ai_provider))+' '+(a.ai_configured?'configured':'NO KEY')+'</small><div style="margin-top:4px"><small>Last post: '+esc(a.last_post_status||'none')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</small></div><div style="margin-top:6px">'+(channels||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
+        '<div class="actions" style="margin-top:8px"><button class="test-gemini secondary" data-id="'+esc(a.id)+'">Test AI</button><button class="test-pipeline secondary" data-id="'+esc(a.id)+'">Test full pipeline</button><button class="test-account secondary" data-id="'+esc(a.id)+'">Test đăng X</button></div></div></div>';
     }).join("");
     return '<div class="child-card"><div class="child-head"><div><h3>'+esc(c.name)+'</h3><small>'+esc(c.slug)+'</small></div><span class="badge '+statusClass+'">'+esc(c.status.toUpperCase())+'</span></div>'+
       '<div class="meta"><span>X accounts: '+Number(c.account_count||0)+'/5</span><span>Telegram channels: '+Number(c.source_count||0)+'</span><span>Web: '+(c.web_url?'<a href="'+esc(c.web_url)+'" target="_blank" rel="noreferrer">'+esc(c.web_url)+'</a>':'-')+'</span></div>'+
@@ -82,8 +87,8 @@ $("#copyShareBtn").onclick=async()=>{await navigator.clipboard.writeText($("#sha
 async function testGemini(id){
   try{
     const result=await api("/api/admin/accounts/"+encodeURIComponent(id)+"/test-gemini",{method:"POST",body:"{}"});
-    toast("Gemini configured: "+(result.output||"").slice(0,140));
-  }catch(error){toast("Gemini lỗi: "+error.message);}
+    toast("AI OK ("+(result.provider||"-")+"): "+(result.output||"").slice(0,140));
+  }catch(error){toast("AI lỗi: "+error.message);}
 }
 async function testPipeline(id){
   if(!confirm("Test Gemini → Buffer → X và đăng một bài test thật?"))return;
