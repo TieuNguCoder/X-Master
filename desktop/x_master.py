@@ -19,7 +19,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 APP_NAME = "X-Master"
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 ANSI_RE = re.compile(r"\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*[@-~])")
 
@@ -112,7 +112,7 @@ def save_secrets(value: dict):
 HTTP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.2.1"
+    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.2.2"
 )
 
 
@@ -162,6 +162,7 @@ async def run_collector():
     allowed_ids: set[str] = set()
     allowed_users: set[str] = set()
     source_cache: list[dict] = []
+    last_miss_refresh = 0.0
 
     def sync_sources_blocking():
         status, payload = http_json(
@@ -235,22 +236,37 @@ async def run_collector():
                 await asyncio.sleep(min(5 * attempt, 20))
 
     if not startup_synced:
-        log("Collector connected to Telegram, but Master source sync is unavailable. Keeping Collector alive and retrying every 60 seconds.")
+        log("Collector connected to Telegram, but Master source sync is unavailable. Keeping Collector alive and retrying automatically.")
 
     @client.on(events.NewMessage())
     async def on_message(event):
+        nonlocal last_miss_refresh
         try:
             chat_id = str(event.chat_id or "")
             chat = await event.get_chat()
             username = str(getattr(chat, "username", "") or "").lower()
+            label = username or chat_id
 
             if chat_id not in allowed_ids and username not in allowed_users:
-                return
+                now = time.monotonic()
+                if now - last_miss_refresh >= 3:
+                    last_miss_refresh = now
+                    try:
+                        await sync_sources()
+                        log(f"Source cache refreshed on message miss chat={label}")
+                    except Exception as exc:
+                        log("Source refresh on message miss failed: " + str(exc))
+
+                if chat_id not in allowed_ids and username not in allowed_users:
+                    log(f"SKIPPED unassigned chat={label} msg={event.message.id}")
+                    return
 
             text = event.raw_text or ""
             media = []
             if event.message.media:
                 media.append({"kind": type(event.message.media).__name__})
+
+            log(f"CAPTURED chat={label} msg={event.message.id} text={len(text)} media={len(media)}")
 
             body = {
                 "source": {"channel_id": chat_id, "username": username},
@@ -268,16 +284,22 @@ async def run_collector():
                 30,
             )
             if status in (200, 202):
-                log(f"Forwarded chat={chat_id or username} msg={event.message.id} routed={payload.get('routed_children')}")
+                routed_accounts = payload.get("routed_accounts")
+                routed_count = len(routed_accounts) if isinstance(routed_accounts, list) else 0
+                log(
+                    f"ROUTED chat={label} msg={event.message.id} "
+                    f"children={payload.get('routed_children', 0)} accounts={routed_count} "
+                    f"event={payload.get('event_id', '-')}"
+                )
             else:
-                log(f"Ingest rejected status={status} payload={payload}")
+                log(f"FAILED ingest status={status} chat={label} msg={event.message.id} payload={payload}")
         except Exception as exc:
-            log("Message error: " + str(exc))
+            log("FAILED message: " + str(exc))
 
     async def refresher():
         catalog_tick = 0
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(15)
             try:
                 await sync_sources()
             except Exception as exc:
