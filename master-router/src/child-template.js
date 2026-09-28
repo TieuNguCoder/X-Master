@@ -62,9 +62,17 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
             <label>X username<input id="xHandle" placeholder="@username"></label>
           </div>
           <div class="row">
-            <label>Gemini API Key<input id="gemini" type="password" autocomplete="off" placeholder="Nhập key"></label>
-            <label>Buffer API Key<input id="buffer" type="password" autocomplete="off" placeholder="Nhập token"></label>
+            <label>AI Provider
+              <select id="aiProvider">
+                <option value="gemini_free">Gemini Free — chạy trên Collector</option>
+                <option value="gemini_paid">Gemini Paid — chạy trên Master</option>
+                <option value="deepseek_paid">DeepSeek Paid — chạy trên Master</option>
+              </select>
+            </label>
+            <label id="aiKeyLabel">Gemini API Key<input id="aiKey" type="password" autocomplete="off" placeholder="Nhập Gemini API key"></label>
           </div>
+          <div id="aiHint" class="muted">Gemini Free được gọi từ Collector/PC để dùng IP máy của Owner.</div>
+          <label>Buffer API Key<input id="buffer" type="password" autocomplete="off" placeholder="Nhập token"></label>
           <div class="actions">
             <button id="loadBufferBtn" type="button" class="secondary">Kiểm tra Buffer & lấy tài khoản X</button>
           </div>
@@ -132,6 +140,27 @@ function renderSources(selected=[]){
   $("#sourceChecks").innerHTML=rows.map(s=>'<label class="source"><input type="checkbox" value="'+esc(s.id)+'" '+(chosen.has(s.id)?'checked':'')+'><span><strong>'+esc(s.title)+'</strong><br><span class="muted">'+(s.username?'@'+esc(s.username):esc(s.channel_id||""))+'</span></span></label>').join("")||'<div class="muted">Chưa có kênh. Hãy chạy Collector để đồng bộ danh sách Telegram đã join.</div>';
 }
 function checkedSources(){return [...document.querySelectorAll("#sourceChecks input:checked")].map(x=>x.value);}
+function aiProviderLabel(provider){
+  if(provider==="gemini_free") return "Gemini Free";
+  if(provider==="deepseek_paid") return "DeepSeek Paid";
+  return "Gemini Paid";
+}
+function updateAiUi(){
+  const provider=$("#aiProvider").value;
+  if(provider==="deepseek_paid"){
+    $("#aiKeyLabel").childNodes[0].nodeValue="DeepSeek API Key";
+    $("#aiKey").placeholder="Nhập DeepSeek API key";
+    $("#aiHint").textContent="DeepSeek Paid chạy trên Master Router bằng model deepseek-flash.";
+  }else if(provider==="gemini_free"){
+    $("#aiKeyLabel").childNodes[0].nodeValue="Gemini Free API Key";
+    $("#aiKey").placeholder="Nhập Gemini Free API key";
+    $("#aiHint").textContent="Gemini Free chạy trên Collector/PC để tránh giới hạn location của Cloudflare.";
+  }else{
+    $("#aiKeyLabel").childNodes[0].nodeValue="Gemini Paid API Key";
+    $("#aiKey").placeholder="Nhập Gemini Paid API key";
+    $("#aiHint").textContent="Gemini Paid chạy trên Master Router.";
+  }
+}
 function renderAccounts(){
   const max=Number(state.limits?.max_accounts||5);
   $("#limitText").textContent="Đang dùng "+state.accounts.length+"/"+max+" tài khoản";
@@ -139,7 +168,7 @@ function renderAccounts(){
     const chips=(a.sources||[]).map(s=>'<span class="chip">'+esc(s.title)+'</span>').join("");
     return '<div class="account"><div class="account-head"><div><h3>'+esc(a.display_name)+'</h3><div class="muted">'+(a.x_handle?'@'+esc(a.x_handle):'Chưa ghi X username')+'</div></div><span class="badge '+(a.enabled?'':'off')+'">'+(a.enabled?'RUNNING':'PAUSED')+'</span></div>'+
       '<div class="chips">'+(chips||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
-      '<div class="muted" style="margin-top:8px">Gemini: '+(a.gemini_configured?'configured':'chưa có')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
+      '<div class="muted" style="margin-top:8px">AI: '+esc(aiProviderLabel(a.ai_provider))+' · '+(a.ai_configured?'configured':'chưa có key')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
       '<div class="muted" style="margin-top:6px">Bài gần nhất: '+esc(a.last_post_status||'chưa có')+(a.last_post_at?' · '+esc(a.last_post_at):'')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</div>'+
       '<div class="actions"><button class="test secondary" data-id="'+esc(a.id)+'">Test đăng X</button><button class="edit secondary" data-id="'+esc(a.id)+'">Sửa</button><button class="del danger" data-id="'+esc(a.id)+'">Xóa</button></div></div>';
   }).join("")||'<div class="muted">Chưa có tài khoản X.</div>';
@@ -149,20 +178,20 @@ function renderAccounts(){
   $("#saveBtn").disabled=!editingId&&state.accounts.length>=max;
 }
 function resetForm(){
-  editingId=null;$("#accountForm").reset();$("#mode").value="news";$("#premium").value="0";$("#enabled").value="1";
+  editingId=null;$("#accountForm").reset();$("#aiProvider").value="gemini_free";$("#mode").value="news";$("#premium").value="0";$("#enabled").value="1";
   $("#formTitle").textContent="Thêm tài khoản X";$("#saveBtn").textContent="+ Thêm tài khoản";$("#cancelEdit").classList.add("hidden");
-  $("#gemini").placeholder="Nhập key";$("#buffer").placeholder="Nhập token";renderSources([]);
+  $("#aiKey").value="";$("#buffer").value="";$("#buffer").placeholder="Nhập token";updateAiUi();renderSources([]);
 }
 function beginEdit(id){
   const a=state.accounts.find(x=>x.id===id);if(!a)return;
   editingId=id;$("#formTitle").textContent="Sửa "+a.display_name;$("#saveBtn").textContent="Lưu thay đổi";$("#cancelEdit").classList.remove("hidden");
   $("#displayName").value=a.display_name||"";$("#xHandle").value=a.x_handle||"";$("#bufferChannelId").value=a.buffer_channel_id||"";$("#bufferChannelName").value=a.buffer_channel_name||"";
-  $("#mode").value=a.content_mode||"news";$("#premium").value=a.x_premium?"1":"0";$("#enabled").value=a.enabled?"1":"0";
-  $("#gemini").value="";$("#buffer").value="";$("#gemini").placeholder=a.gemini_configured?"Đã lưu - nhập key mới để thay":"Nhập key";$("#buffer").placeholder=a.buffer_configured?"Đã lưu - nhập token mới để thay":"Nhập token";
+  $("#aiProvider").value=a.ai_provider||"gemini_paid";$("#mode").value=a.content_mode||"news";$("#premium").value=a.x_premium?"1":"0";$("#enabled").value=a.enabled?"1":"0";
+  $("#aiKey").value="";$("#buffer").value="";updateAiUi();$("#aiKey").placeholder=a.ai_configured?"Đã lưu - nhập key mới để thay":$("#aiKey").placeholder;$("#buffer").placeholder=a.buffer_configured?"Đã lưu - nhập token mới để thay":"Nhập token";
   $("#sourceSearch").value="";renderSources(a.source_ids||[]);window.scrollTo({top:0,behavior:"smooth"});
 }
 function payload(){
-  return {display_name:$("#displayName").value.trim(),x_handle:$("#xHandle").value.trim(),gemini_api_key:$("#gemini").value.trim(),buffer_api_key:$("#buffer").value.trim(),buffer_channel_id:$("#bufferChannelId").value.trim(),buffer_channel_name:$("#bufferChannelName").value.trim(),content_mode:$("#mode").value,x_premium:$("#premium").value==="1",enabled:$("#enabled").value==="1",source_ids:checkedSources()};
+  return {display_name:$("#displayName").value.trim(),x_handle:$("#xHandle").value.trim(),ai_provider:$("#aiProvider").value,ai_api_key:$("#aiKey").value.trim(),buffer_api_key:$("#buffer").value.trim(),buffer_channel_id:$("#bufferChannelId").value.trim(),buffer_channel_name:$("#bufferChannelName").value.trim(),content_mode:$("#mode").value,x_premium:$("#premium").value==="1",enabled:$("#enabled").value==="1",source_ids:checkedSources()};
 }
 async function loadBufferChannels(){
   const key=$("#buffer").value.trim();
@@ -204,9 +233,11 @@ async function testPost(id){
 }
 async function removeAccount(id){if(!confirm("Xóa tài khoản X này?"))return;try{await api("/api/accounts/"+encodeURIComponent(id),{method:"DELETE"});if(editingId===id)resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}}
 $("#cancelEdit").onclick=resetForm;$("#reloadBtn").onclick=()=>load().catch(err=>$("#status").textContent="Lỗi: "+err.message);
+$("#aiProvider").onchange=updateAiUi;
 $("#loadBufferBtn").onclick=loadBufferChannels;
 $("#bufferChannels").onchange=()=>{const o=$("#bufferChannels").selectedOptions[0];if(!o)return;$("#bufferChannelId").value=o.value;$("#bufferChannelName").value=o.dataset.name||o.textContent||"";};
 $("#sourceSearch").oninput=()=>{const selected=checkedSources();renderSources(selected);};
+updateAiUi();
 load().catch(()=>showLogin());
 </script>
 </body></html>\`;
