@@ -12,8 +12,10 @@ r = await fetch(root + "/");
 assert.equal(r.status, 200);
 const html = await r.text();
 assert.ok(html.includes("Nhập mật khẩu"));
+assert.ok(html.includes("Thêm tài khoản X"));
 assert.ok(html.includes("Gemini API Key"));
 assert.ok(html.includes("Buffer API Key"));
+assert.ok(html.includes("Kênh Telegram cho tài khoản này"));
 
 r = await fetch(root + "/api/login", {
   method: "POST",
@@ -29,20 +31,60 @@ r = await fetch(root + "/api/me", { headers: { cookie } });
 assert.equal(r.status, 200);
 body = await r.json();
 assert.equal(body.child.name, "Tester Smoke");
-assert.equal(body.sources.length, 1);
+assert.equal(body.source_catalog.length, 2);
+assert.equal(body.accounts.length, 0);
+assert.equal(body.limits.max_accounts, 5);
 
-r = await fetch(root + "/api/settings", {
-  method: "PUT",
+r = await fetch(root + "/api/accounts", {
+  method: "POST",
   headers: { cookie, "content-type": "application/json" },
   body: JSON.stringify({
+    display_name: "Holly",
+    x_handle: "@holly",
     gemini_api_key: "gemini-smoke",
     buffer_api_key: "buffer-smoke",
+    buffer_channel_id: "buffer-channel-1",
+    content_mode: "news",
+    x_premium: false,
+    enabled: true,
+    source_ids: ["src_smoke"]
+  })
+});
+assert.equal(r.status, 201);
+body = await r.json();
+assert.equal(body.account.display_name, "Holly");
+assert.equal(body.account.sources.length, 1);
+
+r = await fetch(root + "/api/accounts/" + body.account.id, {
+  method: "PATCH",
+  headers: { cookie, "content-type": "application/json" },
+  body: JSON.stringify({
+    display_name: "Holly Updated",
+    x_handle: "holly2",
+    buffer_channel_id: "buffer-channel-2",
     content_mode: "airdrop",
-    x_premium: true
+    x_premium: true,
+    enabled: false,
+    source_ids: ["src_smoke", "src_second"]
   })
 });
 assert.equal(r.status, 200);
 body = await r.json();
-assert.equal(body.saved, true);
+assert.equal(body.account.display_name, "Holly Updated");
+assert.equal(body.account.sources.length, 2);
+assert.equal(body.account.enabled, false);
+
+r = await fetch(root + "/api/me", { headers: { cookie } });
+body = await r.json();
+assert.equal(body.accounts.length, 1);
+assert.equal(body.accounts[0].source_ids.length, 2);
+
+r = await fetch(root + "/api/accounts/" + body.accounts[0].id, {
+  method: "DELETE",
+  headers: { cookie }
+});
+assert.equal(r.status, 200);
+body = await r.json();
+assert.equal(body.deleted, true);
 
 console.log("child-live-smoke: PASS");
