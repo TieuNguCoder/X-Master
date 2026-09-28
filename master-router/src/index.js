@@ -506,8 +506,6 @@ async function deleteXAccount(env, child, accountId) {
 }
 
 async function createChild(env, request, admin) {
-
-async function createChild(env, request, admin) {
   const body = await readJson(request);
   const name = String(body.name || "").trim();
   const password = String(body.password || "");
@@ -515,15 +513,6 @@ async function createChild(env, request, admin) {
   if (password.length < 8) throw Object.assign(new Error("password_too_short"), { status: 400 });
 
   const infra = normalizeInfra(body);
-  const sourceIds = [...new Set((Array.isArray(body.source_ids) ? body.source_ids : []).map(String))];
-
-  if (sourceIds.length) {
-    const placeholders = sourceIds.map(() => "?").join(",");
-    const found = await env.DB.prepare("SELECT id FROM sources WHERE id IN (" + placeholders + ")").bind(...sourceIds).all();
-    if ((found.results || []).length !== sourceIds.length) {
-      throw Object.assign(new Error("invalid_source_id"), { status: 400 });
-    }
-  }
 
   const jobId = id("job");
   await env.DB.prepare(
@@ -557,10 +546,6 @@ async function createChild(env, request, admin) {
       ).bind(childId)
     ]);
 
-    for (const sourceId of sourceIds) {
-      await env.DB.prepare("INSERT INTO child_sources(child_id,source_id) VALUES(?,?)").bind(childId, sourceId).run();
-    }
-
     await env.DB.prepare(
       "UPDATE deployment_jobs SET child_id=?,step=? WHERE id=?"
     ).bind(childId, "deploy_worker", jobId).run();
@@ -582,7 +567,7 @@ async function createChild(env, request, admin) {
     await audit(env, "admin", admin.id, "child.created", "child", childId, {
       name,
       worker_name: workerName,
-      source_count: sourceIds.length
+      account_count: 0
     });
 
     return {
@@ -593,7 +578,7 @@ async function createChild(env, request, admin) {
         status: "ready",
         worker_name: workerName,
         web_url: deployedResult.webUrl,
-        source_count: sourceIds.length
+        account_count: 0
       }
     };
   } catch (error) {
