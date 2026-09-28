@@ -302,23 +302,210 @@ async function listSources(env) {
   return result.results || [];
 }
 
+async function accountSources(env, accountId) {
+  const result = await env.DB.prepare(
+    `SELECT s.id,s.title,s.username,s.channel_id,s.enabled
+     FROM sources s
+     JOIN x_account_sources xs ON xs.source_id=s.id
+     WHERE xs.account_id=?
+     ORDER BY lower(s.title),s.id`
+  ).bind(accountId).all();
+  return result.results || [];
+}
+
+async function listXAccounts(env, childId) {
+  const result = await env.DB.prepare(
+    `SELECT id,child_id,display_name,x_handle,encrypted_json,buffer_channel_id,buffer_channel_name,
+            content_mode,x_premium,enabled,created_at,updated_at
+     FROM x_accounts WHERE child_id=? ORDER BY created_at,id`
+  ).bind(childId).all();
+
+  const accounts = [];
+  for (const row of (result.results || [])) {
+    let geminiConfigured = false;
+    let bufferConfigured = false;
+    let settingsCorrupt = false;
+    if (row.encrypted_json) {
+      try {
+        const secrets = await decryptJson(env.MASTER_KEY, row.encrypted_json);
+        geminiConfigured = Boolean(secrets.gemini_api_key);
+        bufferConfigured = Boolean(secrets.buffer_api_key);
+      } catch {
+        settingsCorrupt = true;
+      }
+    }
+    const sources = await accountSources(env, row.id);
+    accounts.push({
+      id: row.id,
+      child_id: row.child_id,
+      display_name: row.display_name,
+      x_handle: row.x_handle || null,
+      buffer_channel_id: row.buffer_channel_id || null,
+      buffer_channel_name: row.buffer_channel_name || null,
+      content_mode: row.content_mode || "news",
+      x_premium: Boolean(row.x_premium),
+      enabled: Boolean(row.enabled),
+      gemini_configured: geminiConfigured,
+      buffer_configured: bufferConfigured,
+      settings_corrupt: settingsCorrupt,
+      sources,
+      source_ids: sources.map((s) => s.id),
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    });
+  }
+  return accounts;
+}
+
 async function listChildren(env) {
   const result = await env.DB.prepare(
     `SELECT c.id,c.name,c.slug,c.status,c.worker_name,c.web_url,c.last_health_at,c.last_error,c.created_at,c.updated_at,
-       (SELECT COUNT(*) FROM child_sources cs WHERE cs.child_id=c.id) AS source_count
+       (SELECT COUNT(*) FROM x_accounts a WHERE a.child_id=c.id) AS account_count,
+       (SELECT COUNT(DISTINCT xs.source_id)
+          FROM x_accounts a JOIN x_account_sources xs ON xs.account_id=a.id
+         WHERE a.child_id=c.id) AS source_count
      FROM children c ORDER BY c.created_at DESC`
   ).all();
-  return result.results || [];
+
+  const children = [];
+  for (const child of (result.results || [])) {
+    children.push({ ...child, accounts: await listXAccounts(env, child.id) });
+  }
+  return children;
 }
 
 async function assignedSources(env, childId) {
   const result = await env.DB.prepare(
-    `SELECT s.id,s.title,s.username,s.channel_id,s.enabled
-     FROM sources s JOIN child_sources cs ON cs.source_id=s.id
-     WHERE cs.child_id=? ORDER BY s.title`
+    `SELECT DISTINCT s.id,s.title,s.username,s.channel_id,s.enabled
+     FROM sources s
+     JOIN x_account_sources xs ON xs.source_id=s.id
+     JOIN x_accounts a ON a.id=xs.account_id
+     WHERE a.child_id=? ORDER BY lower(s.title),s.id`
   ).bind(childId).all();
   return result.results || [];
 }
+
+async function validateSourceIds(env, sourceIds) {
+  const ids = [...new Set((Array.isArray(sourceIds) ? sourceIds : []).map(String).filter(Boolean))];
+  if (!ids.length) return ids;
+  const placeholders = ids.map(() => "?").join(",");
+  const found = await env.DB.prepare(
+    "SELECT id FROM sources WHERE id IN (" + placeholders + ")"
+  ).bind(...ids).all();
+  if ((found.results || []).length !== ids.length) {
+    throw Object.assign(new Error("invalid_source_id"), { status: 400 });
+  }
+  return ids;
+}
+
+async function childMe(env, child) {
+  return {
+    child: { id: child.id, name: child.name, status: child.status },
+    source_catalog: await listSources(env),
+    accounts: await listXAccounts(env, child.id),
+    limits: { max_accounts: 5 }
+  };
+}
+
+async function saveXAccount(env, child, body, accountId = null) {
+  const displayName = String(body.display_name || "").trim();
+  const xHandle = String(body.x_handle || "").trim().replace(/^@/, "") || null;
+  if (displayName.length < 2) throw Object.assign(new Error("account_name_required"), { status: 400 });
+
+  const sourceIds = await validateSourceIds(env, body.source_ids);
+  const mode = body.content_mode === "airdrop" ? "airdrop" : "news";
+  const premium = body.x_premium ? 1 : 0;
+  const enabled = body.enabled === false ? 0 : 1;
+  const bufferChannelId = String(body.buffer_channel_id || "").trim() || null;
+  const bufferChannelName = String(body.buffer_channel_name || "").trim() || null;
+
+  let existing = null;
+  if (accountId) {
+    existing = await env.DB.prepare(
+      "SELECT * FROM x_accounts WHERE id=? AND child_id=?"
+    ).bind(accountId, child.id).first();
+    if (!existing) throw Object.assign(new Error("x_account_not_found"), { status: 404 });
+  } else {
+    const count = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM x_accounts WHERE child_id=?"
+    ).bind(child.id).first();
+    if (Number(count?.n || 0) >= 5) {
+      throw Object.assign(new Error("x_account_limit_reached"), { status: 409 });
+    }
+  }
+
+  let secrets = {};
+  if (existing?.encrypted_json) {
+    try {
+      secrets = await decryptJson(env.MASTER_KEY, existing.encrypted_json);
+    } catch {
+      throw Object.assign(new Error("account_settings_decrypt_failed"), { status: 500 });
+    }
+  }
+  const gemini = String(body.gemini_api_key || "").trim();
+  const buffer = String(body.buffer_api_key || "").trim();
+  if (gemini) secrets.gemini_api_key = gemini;
+  if (buffer) secrets.buffer_api_key = buffer;
+  const encrypted = Object.keys(secrets).length ? await encryptJson(env.MASTER_KEY, secrets) : null;
+
+  const finalId = accountId || id("xa");
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE x_accounts
+       SET display_name=?,x_handle=?,encrypted_json=?,buffer_channel_id=?,buffer_channel_name=?,
+           content_mode=?,x_premium=?,enabled=?,updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND child_id=?`
+    ).bind(
+      displayName,xHandle,encrypted,bufferChannelId,bufferChannelName,
+      mode,premium,enabled,finalId,child.id
+    ).run();
+    await env.DB.prepare("DELETE FROM x_account_sources WHERE account_id=?").bind(finalId).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO x_accounts(
+        id,child_id,display_name,x_handle,encrypted_json,buffer_channel_id,buffer_channel_name,
+        content_mode,x_premium,enabled
+      ) VALUES(?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      finalId,child.id,displayName,xHandle,encrypted,bufferChannelId,bufferChannelName,
+      mode,premium,enabled
+    ).run();
+  }
+
+  for (const sourceId of sourceIds) {
+    await env.DB.prepare(
+      "INSERT INTO x_account_sources(account_id,source_id) VALUES(?,?)"
+    ).bind(finalId, sourceId).run();
+  }
+
+  await audit(env, "child", child.id, existing ? "x_account.updated" : "x_account.created", "x_account", finalId, {
+    display_name: displayName,
+    x_handle: xHandle,
+    source_count: sourceIds.length,
+    gemini_updated: Boolean(gemini),
+    buffer_updated: Boolean(buffer),
+    buffer_channel_id: bufferChannelId,
+    content_mode: mode,
+    x_premium: Boolean(premium),
+    enabled: Boolean(enabled)
+  });
+
+  return {
+    account: (await listXAccounts(env, child.id)).find((a) => a.id === finalId)
+  };
+}
+
+async function deleteXAccount(env, child, accountId) {
+  const account = await env.DB.prepare(
+    "SELECT id,display_name FROM x_accounts WHERE id=? AND child_id=?"
+  ).bind(accountId, child.id).first();
+  if (!account) throw Object.assign(new Error("x_account_not_found"), { status: 404 });
+  await env.DB.prepare("DELETE FROM x_accounts WHERE id=? AND child_id=?").bind(accountId, child.id).run();
+  await audit(env, "child", child.id, "x_account.deleted", "x_account", accountId, { display_name: account.display_name });
+  return { deleted: true };
+}
+
+async function createChild(env, request, admin) {
 
 async function createChild(env, request, admin) {
   const body = await readJson(request);
@@ -479,74 +666,6 @@ async function deleteChild(env, admin, childId) {
   return { deleted: true };
 }
 
-async function childMe(env, child) {
-  const settings = await env.DB.prepare(
-    "SELECT content_mode,x_premium,enabled,buffer_channel_id,buffer_channel_name,encrypted_json FROM child_settings WHERE child_id=?"
-  ).bind(child.id).first();
-
-  let secretState = { gemini_configured: false, buffer_configured: false };
-  if (settings?.encrypted_json) {
-    try {
-      const secrets = await decryptJson(env.MASTER_KEY, settings.encrypted_json);
-      secretState = {
-        gemini_configured: Boolean(secrets.gemini_api_key),
-        buffer_configured: Boolean(secrets.buffer_api_key)
-      };
-    } catch {
-      throw Object.assign(new Error("settings_decrypt_failed"), { status: 500 });
-    }
-  }
-
-  return {
-    child: { id: child.id, name: child.name, status: child.status },
-    sources: await assignedSources(env, child.id),
-    settings: {
-      content_mode: settings?.content_mode || "news",
-      x_premium: Boolean(settings?.x_premium),
-      enabled: settings ? Boolean(settings.enabled) : true,
-      buffer_channel_id: settings?.buffer_channel_id || null,
-      buffer_channel_name: settings?.buffer_channel_name || null,
-      ...secretState
-    }
-  };
-}
-
-async function saveChildSettings(env, child, body) {
-  const current = await env.DB.prepare("SELECT * FROM child_settings WHERE child_id=?").bind(child.id).first();
-  let secrets = {};
-  if (current?.encrypted_json) {
-    try {
-      secrets = await decryptJson(env.MASTER_KEY, current.encrypted_json);
-    } catch {
-      throw Object.assign(new Error("settings_decrypt_failed"), { status: 500 });
-    }
-  }
-
-  const gemini = String(body.gemini_api_key || "").trim();
-  const buffer = String(body.buffer_api_key || "").trim();
-  if (gemini) secrets.gemini_api_key = gemini;
-  if (buffer) secrets.buffer_api_key = buffer;
-
-  const encrypted = Object.keys(secrets).length ? await encryptJson(env.MASTER_KEY, secrets) : null;
-  const mode = body.content_mode === "airdrop" ? "airdrop" : "news";
-  const premium = body.x_premium ? 1 : 0;
-
-  await env.DB.prepare(
-    `UPDATE child_settings
-     SET encrypted_json=?,content_mode=?,x_premium=?,updated_at=CURRENT_TIMESTAMP
-     WHERE child_id=?`
-  ).bind(encrypted, mode, premium, child.id).run();
-
-  await audit(env, "child", child.id, "child.settings_updated", "child", child.id, {
-    gemini_updated: Boolean(gemini),
-    buffer_updated: Boolean(buffer),
-    content_mode: mode,
-    x_premium: Boolean(premium)
-  });
-
-  return { saved: true };
-}
-
 async function requireCollector(env, request) {
   const provided = request.headers.get("x-collector-secret") || "";
   if (!provided || !timingSafeEqual(provided, env.COLLECTOR_SECRET)) {
@@ -554,9 +673,51 @@ async function requireCollector(env, request) {
   }
 }
 
+async function syncCollectorCatalog(env, request) {
+  await requireCollector(env, request);
+  const body = await readJson(request);
+  const incoming = Array.isArray(body.sources) ? body.sources.slice(0, 2000) : [];
+  let synced = 0;
+
+  for (const raw of incoming) {
+    const title = String(raw.title || raw.name || "").trim().slice(0, 300);
+    const username = String(raw.username || "").trim().replace(/^@/, "").slice(0, 200) || null;
+    const channelId = String(raw.channel_id || "").trim().slice(0, 100) || null;
+    if (!title || (!username && !channelId)) continue;
+
+    let existing = null;
+    if (channelId) {
+      existing = await env.DB.prepare("SELECT id FROM sources WHERE channel_id=? LIMIT 1").bind(channelId).first();
+    }
+    if (!existing && username) {
+      existing = await env.DB.prepare("SELECT id FROM sources WHERE lower(username)=lower(?) LIMIT 1").bind(username).first();
+    }
+
+    if (existing) {
+      await env.DB.prepare(
+        "UPDATE sources SET title=?,username=?,channel_id=?,enabled=1,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+      ).bind(title, username, channelId, existing.id).run();
+    } else {
+      await env.DB.prepare(
+        "INSERT INTO sources(id,title,username,channel_id,enabled) VALUES(?,?,?,?,1)"
+      ).bind(id("src"), title, username, channelId).run();
+    }
+    synced += 1;
+  }
+
+  await audit(env, "collector", "local", "collector.catalog_synced", "source", null, { count: synced });
+  return { synced };
+}
+
 async function collectorSources(env) {
   const result = await env.DB.prepare(
-    "SELECT id,title,username,channel_id FROM sources WHERE enabled=1 ORDER BY title"
+    `SELECT DISTINCT s.id,s.title,s.username,s.channel_id
+       FROM sources s
+       JOIN x_account_sources xs ON xs.source_id=s.id
+       JOIN x_accounts a ON a.id=xs.account_id
+       JOIN children c ON c.id=a.child_id
+      WHERE s.enabled=1 AND a.enabled=1 AND c.status='ready'
+      ORDER BY lower(s.title),s.id`
   ).all();
   return result.results || [];
 }
@@ -577,16 +738,17 @@ async function ingestEvent(env, request) {
 
   if (!matched) throw Object.assign(new Error("source_not_registered"), { status: 404 });
 
-  const children = await env.DB.prepare(
-    `SELECT c.id,c.name,c.web_url
-     FROM children c
-     JOIN child_sources cs ON cs.child_id=c.id
-     JOIN child_settings st ON st.child_id=c.id
-     WHERE cs.source_id=? AND c.status='ready' AND st.enabled=1
-     ORDER BY c.created_at`
+  const routedResult = await env.DB.prepare(
+    `SELECT a.id,a.display_name,a.x_handle,a.child_id,c.name AS child_name,c.web_url
+       FROM x_accounts a
+       JOIN x_account_sources xs ON xs.account_id=a.id
+       JOIN children c ON c.id=a.child_id
+      WHERE xs.source_id=? AND a.enabled=1 AND c.status='ready'
+      ORDER BY c.created_at,a.created_at`
   ).bind(matched.id).all();
 
-  const routed = children.results || [];
+  const routed = routedResult.results || [];
+  const uniqueChildren = [...new Set(routed.map((x) => x.child_id))];
   const externalId = String(body.external_id || "").trim() || null;
   const eventId = id("evt");
 
@@ -600,19 +762,26 @@ async function ingestEvent(env, request) {
       externalId,
       String(body.text || "").slice(0, 20000),
       JSON.stringify(Array.isArray(body.media) ? body.media : []),
-      JSON.stringify(routed.map((x) => x.id)),
+      JSON.stringify(uniqueChildren),
       "accepted"
     ).run();
   } catch (error) {
     if (externalId && String(error).toLowerCase().includes("unique")) {
-      return { accepted: false, duplicate: true, source: matched, routed_children: routed.length };
+      return { accepted: false, duplicate: true, source: matched, routed_accounts: routed.length };
     }
     throw error;
   }
 
+  for (const account of routed) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO ingest_account_routes(event_id,account_id,status) VALUES(?,?,?)"
+    ).bind(eventId, account.id, "accepted").run();
+  }
+
   await audit(env, "collector", "local", "ingest.accepted", "source", matched.id, {
     event_id: eventId,
-    routed_children: routed.length,
+    routed_accounts: routed.length,
+    routed_children: uniqueChildren.length,
     external_id: externalId
   });
 
@@ -620,9 +789,18 @@ async function ingestEvent(env, request) {
     accepted: true,
     event_id: eventId,
     source: matched,
-    routed_children: routed.map((x) => ({ id: x.id, name: x.name }))
+    routed_children: uniqueChildren.length,
+    routed_accounts: routed.map((x) => ({
+      id: x.id,
+      display_name: x.display_name,
+      x_handle: x.x_handle,
+      child_id: x.child_id,
+      child_name: x.child_name
+    }))
   };
 }
+
+async function handleApi(request, env) {
 
 async function handleApi(request, env) {
   await requireBindings(env);
@@ -632,6 +810,10 @@ async function handleApi(request, env) {
   if (path === "/collector/sources" && request.method === "GET") {
     await requireCollector(env, request);
     return json({ sources: await collectorSources(env) });
+  }
+
+  if (path === "/collector/catalog" && request.method === "POST") {
+    return json(await syncCollectorCatalog(env, request));
   }
 
   if (path === "/ingest" && request.method === "POST") {
@@ -647,7 +829,7 @@ async function handleApi(request, env) {
     return json({
       ok: database,
       service: "x-master-router",
-      version: "0.1.1",
+      version: "0.2.0",
       database,
       architecture: "master-router-child-web",
       collector_ready: Boolean(env.COLLECTOR_SECRET)
@@ -764,8 +946,16 @@ async function handleApi(request, env) {
       return json(await childMe(env, child));
     }
 
-    if (path === "/internal/child/settings" && request.method === "PUT") {
-      return json(await saveChildSettings(env, child, await readJson(request)));
+    if (path === "/internal/child/accounts" && request.method === "POST") {
+      return json(await saveXAccount(env, child, await readJson(request)), 201);
+    }
+
+    const accountMatch = path.match(/^\\/internal\\/child\\/accounts\\/([^/]+)$/);
+    if (accountMatch && request.method === "PATCH") {
+      return json(await saveXAccount(env, child, await readJson(request), accountMatch[1]));
+    }
+    if (accountMatch && request.method === "DELETE") {
+      return json(await deleteXAccount(env, child, accountMatch[1]));
     }
   }
 
