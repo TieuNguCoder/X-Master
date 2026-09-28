@@ -60,7 +60,7 @@ This release changes Source and Child management to the real tester workflow:
 - Collector automatically syncs the Telegram channels the account has joined;
 - Owner no longer manually creates or assigns Sources when creating a Child Web;
 - each Child Web can manage up to 5 X accounts;
-- every X account has its own Gemini/Buffer configuration, Buffer channel ID, content mode, Premium setting, enabled state, and Telegram Source selection;
+- every X account has its own Gemini/Buffer configuration, content mode, Premium setting, enabled state, and Telegram Source selection;\n- Child Web can validate a Buffer API key and automatically list connected X channels so the tester does not have to copy Channel IDs manually;
 - testers can add, edit, pause, or delete their own X accounts;
 - Master Web shows every Child Web, its X accounts, and the Telegram channels assigned to each account;
 - ingest routing is now recorded per X account instead of only per Child Web.
