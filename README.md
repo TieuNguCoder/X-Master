@@ -53,6 +53,14 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — DONE
 - Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
 
+## v0.2.3 Live failure diagnostics
+
+- Master Logs now render `details_json`, including the exact error stored by `x_account.post_failed`;
+- every X account has `Test Gemini`, `Test full pipeline`, and `Test đăng X` controls;
+- `Test Gemini` isolates the Gemini API/key/model step without posting to X;
+- `Test full pipeline` runs Gemini → Buffer → X and returns the failing API error directly;
+- the old `Gemini: OK` display should be interpreted as configured/saved, while the diagnostic test verifies that the key can actually generate content.
+
 ## v0.2.2 Collector routing diagnostics
 
 This release fixes the silent-no-reaction path found during live testing:
