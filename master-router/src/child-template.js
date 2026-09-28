@@ -1,8 +1,5 @@
 export function renderChildWorkerSource() {
   return `
-const MASTER_ROOT = envValue("MASTER_ROOT");
-function envValue() { return ""; }
-
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -65,21 +62,35 @@ button{border:0;border-radius:10px;padding:12px 14px;background:#4f7fd4;color:#f
   </section>
 </div>
 <script>
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+function showLogin(message=""){
+  $("#app").classList.add("hidden");
+  $("#login").classList.remove("hidden");
+  if(message) $("#loginStatus").textContent=message;
+}
+function showApp(){
+  $("#login").classList.add("hidden");
+  $("#app").classList.remove("hidden");
+  $("#loginStatus").textContent="";
+}
 async function api(path, options={}) {
   const r = await fetch(path,{credentials:"same-origin",headers:{"content-type":"application/json",...(options.headers||{})},...options});
   const b = await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(b.error||("HTTP "+r.status));
+  if(!r.ok){
+    if(r.status===401 && path!=="/api/login") showLogin("Phiên đăng nhập đã hết hạn. Nhập lại password.");
+    throw new Error(b.error||("HTTP "+r.status));
+  }
   return b;
 }
-const $=s=>document.querySelector(s);
 async function load(){
   try{
     const me=await api("/api/me");
-    $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
+    showApp();
     $("#title").textContent=me.child.name;
     $("#mode").value=me.settings.content_mode||"news";
     $("#premium").value=me.settings.x_premium?"1":"0";
-    $("#sources").innerHTML=(me.sources||[]).map(s=>'<div class="source">'+s.title+(s.username?' · @'+s.username:'')+'</div>').join("")||'<div class="muted">Chưa được cấp Source.</div>';
+    $("#sources").innerHTML=(me.sources||[]).map(s=>'<div class="source">'+esc(s.title)+(s.username?' · @'+esc(s.username):'')+'</div>').join("")||'<div class="muted">Chưa được cấp Source.</div>';
   }catch{}
 }
 $("#loginForm").onsubmit=async e=>{e.preventDefault();$("#loginStatus").textContent="Đang đăng nhập...";
@@ -120,7 +131,8 @@ export default {
       if (token) headers["set-cookie"] = "xm_child=" + encodeURIComponent(token) + "; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800";
       return new Response(data, { status: r.status, headers });
     }
-    if (url.pathname.startsWith("/api/")) {
+    if ((url.pathname === "/api/me" && request.method === "GET") ||
+        (url.pathname === "/api/settings" && request.method === "PUT")) {
       const cookie = request.headers.get("cookie") || "";
       const token = cookie.split(";").map(v=>v.trim()).find(v=>v.startsWith("xm_child="));
       const session = token ? decodeURIComponent(token.slice("xm_child=".length)) : "";
