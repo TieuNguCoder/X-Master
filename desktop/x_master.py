@@ -5,6 +5,7 @@ import base64
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,7 +19,15 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 APP_NAME = "X-Master"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
+
+ANSI_RE = re.compile(r"\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*[@-~])")
+
+
+def clean_console_text(value: str) -> str:
+    text = ANSI_RE.sub("", str(value or ""))
+    text = text.replace("\r\r\n", "\n").replace("\r\n", "\n")
+    return "".join(ch for ch in text if ch == "\n" or ch == "\t" or ord(ch) >= 32)
 
 
 class DATA_BLOB(ctypes.Structure):
@@ -368,7 +377,7 @@ class XMasterApp(tk.Tk):
         return env
 
     def _append_deploy(self, line: str):
-        line = line.rstrip("\r\n")
+        line = clean_console_text(line).rstrip("\r\n")
         if not line:
             return
         self.deploy_log.insert("end", line + "\n")
@@ -415,6 +424,7 @@ class XMasterApp(tk.Tk):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
                 bufsize=1,
                 creationflags=flags,
@@ -423,8 +433,9 @@ class XMasterApp(tk.Tk):
             lines = []
             assert proc.stdout is not None
             for line in proc.stdout:
-                lines.append(line)
-                self.after(0, self._append_deploy, line)
+                clean = clean_console_text(line)
+                lines.append(clean)
+                self.after(0, self._append_deploy, clean)
             code = proc.wait()
             self.deploy_proc = None
             if code != 0:
@@ -452,8 +463,9 @@ class XMasterApp(tk.Tk):
         def fail(exc):
             self.deploy_btn.configure(state="normal")
             self.deploy_step.set("DEPLOY FAILED")
-            self._append_deploy("ERROR: " + str(exc))
-            messagebox.showerror(APP_NAME, str(exc))
+            clean = clean_console_text(str(exc))
+            self._append_deploy("ERROR: " + clean)
+            messagebox.showerror(APP_NAME, clean)
 
         self.run_bg(work, done, fail)
 
@@ -614,7 +626,10 @@ def main():
         if missing:
             print("SELF TEST FAILED: " + " | ".join(missing))
             raise SystemExit(2)
-        print("SELF TEST PASS · X-Master " + APP_VERSION)
+        if clean_console_text("\x1b[33mWARN\x1b[0m") != "WARN":
+            print("SELF TEST FAILED: ANSI sanitizer")
+            raise SystemExit(3)
+        print("SELF TEST PASS | X-Master " + APP_VERSION)
         return
 
     if "--collector" in sys.argv:
