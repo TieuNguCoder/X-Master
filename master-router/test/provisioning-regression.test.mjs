@@ -94,6 +94,16 @@ try {
   assert.ok(premiumNewsPrompt.prompt.includes("CONTENT MODE: NEWS — PREMIUM/BLUE X ACCOUNT."));
   assert.ok(premiumNewsPrompt.maxChars > airdropPrompt.maxChars);
 
+  const forcedAirdrop = __test.cleanAiOutput(
+    "🎁 Qyrolabs waitlist is open.",
+    275,
+    "Qyrolabs waitlist is open. Reward: XP. Join https://qyrolabs.space and complete the tasks.",
+    { content_mode: "airdrop", x_premium: 0 }
+  );
+  assert.ok(forcedAirdrop.includes("https://qyrolabs.space"));
+  assert.ok(forcedAirdrop.includes("#Airdrop"));
+  assert.ok(forcedAirdrop.includes("#Web3"));
+
   const postingCalls = [];
   globalThis.fetch = async (url, init = {}) => {
     postingCalls.push({ url: String(url), init });
