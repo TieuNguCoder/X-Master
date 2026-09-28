@@ -65,9 +65,15 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
             <label>Gemini API Key<input id="gemini" type="password" autocomplete="off" placeholder="Nhập key"></label>
             <label>Buffer API Key<input id="buffer" type="password" autocomplete="off" placeholder="Nhập token"></label>
           </div>
+          <div class="actions">
+            <button id="loadBufferBtn" type="button" class="secondary">Kiểm tra Buffer & lấy tài khoản X</button>
+          </div>
+          <label id="bufferChannelsWrap" class="hidden">Tài khoản X trong Buffer
+            <select id="bufferChannels"></select>
+          </label>
           <div class="row">
-            <label>Buffer Channel ID<input id="bufferChannelId" placeholder="Channel ID của X trong Buffer"></label>
-            <label>Buffer Channel Name<input id="bufferChannelName" placeholder="Tên hiển thị (không bắt buộc)"></label>
+            <label>Buffer Channel ID<input id="bufferChannelId" placeholder="Tự điền sau khi chọn tài khoản X"></label>
+            <label>Buffer Channel Name<input id="bufferChannelName" placeholder="Tự điền sau khi chọn tài khoản X"></label>
           </div>
           <div class="row">
             <label>Content mode<select id="mode"><option value="news">News</option><option value="airdrop">Airdrop</option></select></label>
@@ -156,6 +162,30 @@ function beginEdit(id){
 function payload(){
   return {display_name:$("#displayName").value.trim(),x_handle:$("#xHandle").value.trim(),gemini_api_key:$("#gemini").value.trim(),buffer_api_key:$("#buffer").value.trim(),buffer_channel_id:$("#bufferChannelId").value.trim(),buffer_channel_name:$("#bufferChannelName").value.trim(),content_mode:$("#mode").value,x_premium:$("#premium").value==="1",enabled:$("#enabled").value==="1",source_ids:checkedSources()};
 }
+async function loadBufferChannels(){
+  const key=$("#buffer").value.trim();
+  if(!key){$("#status").textContent="Nhập Buffer API Key trước.";return;}
+  $("#status").textContent="Đang kiểm tra Buffer...";
+  $("#loadBufferBtn").disabled=true;
+  try{
+    const result=await api("/api/buffer/channels",{method:"POST",body:JSON.stringify({buffer_api_key:key})});
+    const channels=result.channels||[];
+    if(!channels.length){
+      $("#bufferChannelsWrap").classList.add("hidden");
+      $("#status").textContent="Buffer hợp lệ nhưng chưa thấy tài khoản X nào được kết nối.";
+      return;
+    }
+    $("#bufferChannels").innerHTML=channels.map(ch=>'<option value="'+esc(ch.id)+'" data-name="'+esc(ch.display_name||ch.name||"")+'">'+esc(ch.display_name||ch.name||ch.id)+'</option>').join("");
+    $("#bufferChannelsWrap").classList.remove("hidden");
+    const first=channels[0];
+    $("#bufferChannelId").value=first.id||"";
+    $("#bufferChannelName").value=first.display_name||first.name||"";
+    $("#status").textContent="Đã tìm thấy "+channels.length+" tài khoản X trong Buffer.";
+  }catch(err){
+    $("#bufferChannelsWrap").classList.add("hidden");
+    $("#status").textContent="Buffer lỗi: "+err.message;
+  }finally{$("#loadBufferBtn").disabled=false;}
+}
 async function load(){
   const me=await api("/api/me");state=me;showApp();$("#title").textContent=me.child.name;renderAccounts();if(!editingId)renderSources([]);
 }
@@ -163,6 +193,8 @@ $("#loginForm").onsubmit=async e=>{e.preventDefault();$("#loginStatus").textCont
 $("#accountForm").onsubmit=async e=>{e.preventDefault();$("#status").textContent="Đang lưu...";try{const path=editingId?"/api/accounts/"+encodeURIComponent(editingId):"/api/accounts";const method=editingId?"PATCH":"POST";await api(path,{method,body:JSON.stringify(payload())});$("#status").textContent="Đã lưu.";resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}};
 async function removeAccount(id){if(!confirm("Xóa tài khoản X này?"))return;try{await api("/api/accounts/"+encodeURIComponent(id),{method:"DELETE"});if(editingId===id)resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}}
 $("#cancelEdit").onclick=resetForm;$("#reloadBtn").onclick=()=>load().catch(err=>$("#status").textContent="Lỗi: "+err.message);
+$("#loadBufferBtn").onclick=loadBufferChannels;
+$("#bufferChannels").onchange=()=>{const o=$("#bufferChannels").selectedOptions[0];if(!o)return;$("#bufferChannelId").value=o.value;$("#bufferChannelName").value=o.dataset.name||o.textContent||"";};
 $("#sourceSearch").oninput=()=>{const selected=checkedSources();renderSources(selected);};
 load().catch(()=>showLogin());
 </script>
@@ -205,6 +237,7 @@ export default {
       return new Response(data,{status:r.status,headers});
     }
     if(url.pathname==="/api/me"&&request.method==="GET") return proxyAuthed(request,env,"/internal/child/me");
+    if(url.pathname==="/api/buffer/channels"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/buffer/channels");
     if(url.pathname==="/api/accounts"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/accounts");
     const m=url.pathname.match(/^\\/api\\/accounts\\/([^/]+)$/);
     if(m&&(request.method==="PATCH"||request.method==="DELETE")) return proxyAuthed(request,env,"/internal/child/accounts/"+encodeURIComponent(m[1]));
