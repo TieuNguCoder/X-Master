@@ -19,7 +19,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 APP_NAME = "X-Master"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.2.0"
 
 ANSI_RE = re.compile(r"\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*[@-~])")
 
@@ -112,7 +112,7 @@ def save_secrets(value: dict):
 HTTP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.1.2"
+    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.2.0"
 )
 
 
@@ -178,12 +178,50 @@ async def run_collector():
         source_cache = await asyncio.to_thread(sync_sources_blocking)
         allowed_ids = {str(s.get("channel_id")) for s in source_cache if s.get("channel_id")}
         allowed_users = {str(s.get("username")).lower() for s in source_cache if s.get("username")}
-        log(f"Sources synced: {len(source_cache)}")
+        log(f"Active sources synced: {len(source_cache)}")
+
+    async def sync_joined_catalog():
+        dialogs = await client.get_dialogs()
+        catalog = []
+        for dialog in dialogs:
+            if not getattr(dialog, "is_channel", False):
+                continue
+            entity = getattr(dialog, "entity", None)
+            channel_id = str(getattr(entity, "id", "") or "")
+            if channel_id and not channel_id.startswith("-100"):
+                channel_id = "-100" + channel_id
+            username = str(getattr(entity, "username", "") or "").lower()
+            title = str(getattr(dialog, "name", "") or getattr(entity, "title", "") or username or channel_id)
+            if not title or (not username and not channel_id):
+                continue
+            catalog.append({
+                "title": title,
+                "username": username,
+                "channel_id": channel_id,
+            })
+
+        status, payload = await asyncio.to_thread(
+            http_json,
+            master_root + "/collector/catalog",
+            "POST",
+            {"sources": catalog},
+            {"x-collector-secret": collector_secret},
+            45,
+        )
+        if status != 200:
+            raise RuntimeError("catalog sync failed: " + str(payload))
+        log(f"Telegram catalog synced: {payload.get('synced', 0)} joined channels")
+        return catalog
 
     client = TelegramClient(StringSession(session), api_id, api_hash)
     await client.connect()
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram StringSession is not authorized.")
+
+    try:
+        await sync_joined_catalog()
+    except Exception as exc:
+        log("Initial Telegram catalog sync failed: " + str(exc))
 
     startup_synced = False
     for attempt in range(1, 7):
@@ -237,12 +275,20 @@ async def run_collector():
             log("Message error: " + str(exc))
 
     async def refresher():
+        catalog_tick = 0
         while True:
             await asyncio.sleep(60)
             try:
                 await sync_sources()
             except Exception as exc:
-                log("Source refresh error: " + str(exc))
+                log("Active source refresh error: " + str(exc))
+            catalog_tick += 1
+            if catalog_tick >= 5:
+                catalog_tick = 0
+                try:
+                    await sync_joined_catalog()
+                except Exception as exc:
+                    log("Telegram catalog refresh error: " + str(exc))
 
     log("Collector started.")
     asyncio.create_task(refresher())
@@ -370,7 +416,7 @@ class XMasterApp(tk.Tk):
 
         ttk.Label(
             tab,
-            text="Source list được lấy trực tiếp từ Master Web. Bạn không cần nhập channel lại trong app.",
+            text="Collector tự đồng bộ toàn bộ kênh Telegram đã join lên Master Web. Mỗi Web con tự chọn kênh cho từng tài khoản X.",
             foreground="#666"
         ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(14,0))
 
