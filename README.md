@@ -50,8 +50,20 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 1: Master Router foundation — DONE
 - Phase 2: Child Web provisioning — DONE (deploy + password + source assignment + rollback)
 - Phase 3: Local Telegram Collector + Sources — FOUNDATION DONE
-- Phase 4: Gemini/Buffer processing + X posting — NEXT
-- Phase 5: real end-to-end Telegram → X test
+- Phase 4: Gemini/Buffer processing + X posting — DONE
+- Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
+
+## v0.2.1 Posting pipeline hotfix
+
+This release completes the missing posting path:
+
+- a Telegram message routed to an enabled X account is rewritten with that account's Gemini key;
+- Standard accounts are constrained to short X posts while Premium accounts can use longer copy;
+- Buffer GraphQL `createPost` publishes with `schedulingType: automatic` and `mode: shareNow`;
+- every per-account route is tracked as `queued`, `posted`, or `failed` with a safe error message;
+- Master and Child account views expose the latest posting result;
+- Child Web includes an explicit Buffer → X test-post button;
+- regression tests mock and verify Gemini rewrite + Buffer immediate publishing.
 
 ## v0.2.0 Multi-account Child routing
 
