@@ -44,6 +44,22 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.url === "/internal/child/buffer/channels" && req.method === "POST") {
+    const body = JSON.parse(raw || "{}");
+    if (body.buffer_api_key !== "buffer-smoke") return json(res, { error: "buffer:invalid_api_key" }, 502);
+    return json(res, {
+      channels: [{
+        id: "buffer-channel-1",
+        name: "Holly on X",
+        display_name: "Holly on X",
+        service: "twitter",
+        organization_id: "org-smoke",
+        organization_name: "Smoke Org",
+        queue_paused: false
+      }]
+    });
+  }
+
   if (req.url === "/internal/child/accounts" && req.method === "POST") {
     const body = JSON.parse(raw || "{}");
     if (accounts.length >= 5) return json(res, { error: "x_account_limit_reached" }, 409);
