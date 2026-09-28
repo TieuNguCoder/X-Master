@@ -40,3 +40,42 @@ jobs:
           cp wrangler.example.jsonc wrangler.jsonc
           sed -i 's/REPLACE_WITH_D1_DATABASE_ID/00000000-0000-0000-0000-000000000000/' wrangler.jsonc
           npx wrangler deploy --dry-run --config wrangler.jsonc
+
+
+      - name: Live local Router + D1 smoke
+        run: |
+          HASH=$(node tools/hash-admin-password.mjs master-test-password)
+          cat > .dev.vars <<EOF
+          MASTER_KEY="smoke-master-key"
+          SESSION_PEPPER="smoke-session-pepper"
+          ADMIN_PASSWORD_HASH="$HASH"
+          COLLECTOR_SECRET="collector-smoke-secret"
+          EOF
+
+          npx wrangler d1 execute x-master --local --file schema.sql --config wrangler.jsonc
+          npx wrangler dev --local --port 8799 --config wrangler.jsonc > ../wrangler-local.log 2>&1 &
+          PID=$!
+
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8799/api/health >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" != "1" ]; then
+            cat ../wrangler-local.log
+            kill $PID || true
+            exit 1
+          fi
+
+          node test/local-live-smoke.mjs
+          CODE=$?
+          kill $PID || true
+          wait $PID || true
+          if [ "$CODE" != "0" ]; then
+            cat ../wrangler-local.log
+            exit $CODE
+          fi
