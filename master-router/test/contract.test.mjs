@@ -31,10 +31,17 @@ assert.ok(routerSource.includes('path === "/internal/child/accounts"'));
 assert.ok(routerSource.includes('path === "/internal/child/buffer/channels"'));
 assert.ok(routerSource.includes("https://api.buffer.com"));
 assert.ok(routerSource.includes('routed_accounts'));
+assert.ok(routerSource.includes("gemini-3.5-flash:generateContent"));
+assert.ok(routerSource.includes("mode: shareNow"));
+assert.ok(routerSource.includes("processEventRoutes"));
+assert.ok(routerSource.includes("status='posted'"));
+assert.ok(routerSource.includes("status='failed'"));
 assert.ok(childTemplate.includes("Mỗi web con tối đa 5 tài khoản"));
 assert.ok(childTemplate.includes("/api/accounts"));
 assert.ok(childTemplate.includes("/api/buffer/channels"));
 assert.ok(childTemplate.includes("Kiểm tra Buffer & lấy tài khoản X"));
+assert.ok(childTemplate.includes("Test đăng X"));
+assert.ok(childTemplate.includes("/test-post"));
 assert.ok(childTemplate.includes("source_catalog"));
 
 console.log("contract.test: PASS");
