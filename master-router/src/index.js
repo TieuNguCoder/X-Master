@@ -82,7 +82,7 @@ async function adminSession(env, request) {
   if (!raw) return null;
   const hash = await hmacHex(env.SESSION_PEPPER, raw);
   return env.DB.prepare(
-    "SELECT id,expires_at FROM admin_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"
+    "SELECT id,expires_at FROM admin_sessions WHERE token_hash=? AND revoked_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP"
   ).bind(hash).first();
 }
 
@@ -105,7 +105,7 @@ async function requireChildSession(env, childId, raw) {
   if (!raw) throw Object.assign(new Error("unauthorized"), { status: 401 });
   const hash = await hmacHex(env.SESSION_PEPPER, raw);
   const row = await env.DB.prepare(
-    "SELECT id FROM child_sessions WHERE child_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP"
+    "SELECT id FROM child_sessions WHERE child_id=? AND token_hash=? AND revoked_at IS NULL AND datetime(expires_at) > CURRENT_TIMESTAMP"
   ).bind(childId, hash).first();
   if (!row) throw Object.assign(new Error("unauthorized"), { status: 401 });
   return row;
@@ -511,7 +511,11 @@ async function saveChildSettings(env, child, body) {
   const current = await env.DB.prepare("SELECT * FROM child_settings WHERE child_id=?").bind(child.id).first();
   let secrets = {};
   if (current?.encrypted_json) {
-    try { secrets = await decryptJson(env.MASTER_KEY, current.encrypted_json); } catch {}
+    try {
+      secrets = await decryptJson(env.MASTER_KEY, current.encrypted_json);
+    } catch {
+      throw Object.assign(new Error("settings_decrypt_failed"), { status: 500 });
+    }
   }
 
   const gemini = String(body.gemini_api_key || "").trim();
