@@ -1536,6 +1536,7 @@ export const __test = {
   ensureWorkersSubdomain,
   deployChildWorker,
   geminiRewrite,
+  deepseekRewrite,
   bufferCreateNow
 };
 
