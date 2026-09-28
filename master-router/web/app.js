@@ -82,7 +82,7 @@ $("#copyShareBtn").onclick=async()=>{await navigator.clipboard.writeText($("#sha
 async function testGemini(id){
   try{
     const result=await api("/api/admin/accounts/"+encodeURIComponent(id)+"/test-gemini",{method:"POST",body:"{}"});
-    toast("Gemini OK: "+(result.output||"").slice(0,140));
+    toast("Gemini configured: "+(result.output||"").slice(0,140));
   }catch(error){toast("Gemini lỗi: "+error.message);}
 }
 async function testPipeline(id){
