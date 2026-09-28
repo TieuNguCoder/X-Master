@@ -1179,7 +1179,9 @@ async function handleApi(request, env, ctx) {
 
 export const __test = {
   ensureWorkersSubdomain,
-  deployChildWorker
+  deployChildWorker,
+  geminiRewrite,
+  bufferCreateNow
 };
 
 export default {
