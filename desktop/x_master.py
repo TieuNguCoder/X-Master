@@ -156,7 +156,7 @@ def local_gemini_free_rewrite(job: dict) -> str:
     premium = bool(job.get("x_premium"))
     mode = "airdrop" if str(job.get("content_mode") or "news") == "airdrop" else "news"
     max_chars = 1600 if premium else 275
-    urls = re.findall(r"https?://[^\\s<>()]+", source_text)
+    urls = re.findall(r"https?://[^\s<>()]+", source_text)
 
     universal = [
         "You are rewriting a Telegram source post into a ready-to-publish X post.",
@@ -255,12 +255,12 @@ def local_gemini_free_rewrite(job: dict) -> str:
     candidates = payload.get("candidates") or []
     parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
     output = "".join(str(part.get("text") or "") for part in parts).strip()
-    output = output.strip().strip("\\"'“”`")
+    output = output.strip().strip(chr(34) + chr(39) + "“”" + chr(96))
     if not output:
         raise RuntimeError("empty_response")
 
-    existing_tags = re.findall(r"#[\\w]+", output, flags=re.UNICODE)
-    source_tags = re.findall(r"#[\\w]+", source_text, flags=re.UNICODE)
+    existing_tags = re.findall(r"#[\w]+", output, flags=re.UNICODE)
+    source_tags = re.findall(r"#[\w]+", source_text, flags=re.UNICODE)
     fallback = []
     for tag in source_tags:
         if tag.lower() not in [x.lower() for x in fallback]:
@@ -271,15 +271,15 @@ def local_gemini_free_rewrite(job: dict) -> str:
     lower = source_text.lower()
     candidates_tags = ["#Airdrop", "#Web3"] if mode == "airdrop" else []
     if mode == "news":
-        if "bitcoin" in lower or re.search(r"\\bbtc\\b", lower):
+        if "bitcoin" in lower or re.search(r"\bbtc\b", lower):
             candidates_tags.append("#Bitcoin")
-        if "ethereum" in lower or re.search(r"\\beth\\b", lower):
+        if "ethereum" in lower or re.search(r"\beth\b", lower):
             candidates_tags.append("#Ethereum")
         if "crypto" in lower:
             candidates_tags.append("#Crypto")
         if "web3" in lower:
             candidates_tags.append("#Web3")
-        if "artificial intelligence" in lower or re.search(r"\\bai\\b", lower):
+        if "artificial intelligence" in lower or re.search(r"\bai\b", lower):
             candidates_tags.append("#AI")
         candidates_tags.extend(["#News", "#Update"])
 
@@ -296,12 +296,12 @@ def local_gemini_free_rewrite(job: dict) -> str:
             output = output.rstrip() + "\n\n" + " ".join(extras)
 
     if len(output) > max_chars:
-        tags = re.findall(r"#[\\w]+", output, flags=re.UNICODE)
+        tags = re.findall(r"#[\w]+", output, flags=re.UNICODE)
         if not tags:
             tags = fallback[:2]
         tag_line = " ".join(tags[-4:])
         room = max(40, max_chars - len(tag_line) - 3)
-        body = re.sub(r"(?:\\s*#[\\w]+)+\\s*$", "", output, flags=re.UNICODE).strip()
+        body = re.sub(r"(?:\s*#[\w]+)+\s*$", "", output, flags=re.UNICODE).strip()
         if len(body) > room:
             body = body[: room - 1].rstrip()
             last_space = body.rfind(" ")
