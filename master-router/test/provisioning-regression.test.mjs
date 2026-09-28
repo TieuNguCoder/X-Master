@@ -79,6 +79,21 @@ try {
   assert.equal(deleteCalled, true, "orphan Child Worker must be deleted after health failure");
   console.log("child health failure rollback DELETE: PASS");
 
+  const airdropPrompt = __test.rewritePrompt(
+    "Qyrolabs waitlist is open. Reward: XP. Join https://qyrolabs.space and complete the tasks.",
+    { content_mode: "airdrop", x_premium: 0 }
+  );
+  assert.ok(airdropPrompt.prompt.includes("CONTENT MODE: AIRDROP — STANDARD X ACCOUNT."));
+  assert.ok(airdropPrompt.prompt.includes("Final line: 2 to 4 hashtags."));
+  assert.ok(airdropPrompt.prompt.includes("https://qyrolabs.space"));
+
+  const premiumNewsPrompt = __test.rewritePrompt(
+    "Bitcoin market update with additional context.",
+    { content_mode: "news", x_premium: 1 }
+  );
+  assert.ok(premiumNewsPrompt.prompt.includes("CONTENT MODE: NEWS — PREMIUM/BLUE X ACCOUNT."));
+  assert.ok(premiumNewsPrompt.maxChars > airdropPrompt.maxChars);
+
   const postingCalls = [];
   globalThis.fetch = async (url, init = {}) => {
     postingCalls.push({ url: String(url), init });
@@ -119,14 +134,17 @@ try {
     "Original Telegram smoke post",
     { content_mode: "news", x_premium: 0 }
   );
-  assert.equal(rewritten, "Rewritten smoke post");
+  assert.ok(rewritten.startsWith("Rewritten smoke post"));
+  assert.ok((rewritten.match(/#/g) || []).length >= 2, "news output must contain at least 2 hashtags");
 
   const deepseekRewritten = await __test.deepseekRewrite(
     "deepseek-test-key",
     "Original Telegram smoke post",
     { content_mode: "airdrop", x_premium: 0 }
   );
-  assert.equal(deepseekRewritten, "DeepSeek rewritten smoke post");
+  assert.ok(deepseekRewritten.startsWith("DeepSeek rewritten smoke post"));
+  assert.ok(deepseekRewritten.includes("#Airdrop"));
+  assert.ok(deepseekRewritten.includes("#Web3"));
 
   const post = await __test.bufferCreateNow(
     "buffer-test-key",
