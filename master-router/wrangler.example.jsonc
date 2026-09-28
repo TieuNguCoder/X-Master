@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "x-master-router",
   "main": "src/index.js",
-  "compatibility_date": "2026-09-28",
+  "compatibility_date": "2026-09-18",
   "workers_dev": true,
   "observability": { "enabled": true },
   "assets": {
