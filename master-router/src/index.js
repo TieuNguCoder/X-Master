@@ -62,7 +62,7 @@ async function audit(env, actorType, actorId, action, targetType = null, targetI
 
 async function requireBindings(env) {
   const missing = [];
-  for (const key of ["DB", "MASTER_KEY", "SESSION_PEPPER", "ADMIN_PASSWORD_HASH"]) {
+  for (const key of ["DB", "MASTER_KEY", "SESSION_PEPPER", "ADMIN_PASSWORD_HASH", "COLLECTOR_SECRET"]) {
     if (!env[key]) missing.push(key);
   }
   if (missing.length) throw Object.assign(new Error("missing_bindings:" + missing.join(",")), { status: 503 });
