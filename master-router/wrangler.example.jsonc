@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "x-master-router",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-28",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "web",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/internal/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "x-master",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ]
+}
