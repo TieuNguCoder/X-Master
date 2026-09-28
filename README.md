@@ -53,6 +53,18 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — NEXT
 - Phase 5: real end-to-end Telegram → X test
 
+## v0.2.0 Multi-account Child routing
+
+This release changes Source and Child management to the real tester workflow:
+
+- Collector automatically syncs the Telegram channels the account has joined;
+- Owner no longer manually creates or assigns Sources when creating a Child Web;
+- each Child Web can manage up to 5 X accounts;
+- every X account has its own Gemini/Buffer configuration, Buffer channel ID, content mode, Premium setting, enabled state, and Telegram Source selection;
+- testers can add, edit, pause, or delete their own X accounts;
+- Master Web shows every Child Web, its X accounts, and the Telegram channels assigned to each account;
+- ingest routing is now recorded per X account instead of only per Child Web.
+
 ## v0.1.2 Collector networking hotfix
 
 This release fixes real Windows Collector requests being rejected by Cloudflare Error 1010:
