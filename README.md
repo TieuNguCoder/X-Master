@@ -53,6 +53,17 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — DONE
 - Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
 
+## v0.2.6 Per-account language
+
+Each X account now has its own target post language:
+
+- default is **English (US) / en-US**;
+- common languages are available as quick selections;
+- **Custom language / BCP-47** accepts any language or locale such as `it-IT`, `pl-PL`, `nl-NL`, `fil-PH`, or a plain language name;
+- AI is instructed to translate and write the entire post naturally for the selected audience while preserving URLs, @usernames, ticker symbols, project/brand names, and proper nouns when appropriate;
+- language works independently with Airdrop/News, Standard/Premium, Gemini Free, Gemini Paid, and DeepSeek Paid;
+- existing accounts default to `en-US` until edited.
+
 ## v0.2.5 Content formatting
 
 AI rewriting now follows strict per-account content templates across all three providers:
