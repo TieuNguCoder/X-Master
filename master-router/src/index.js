@@ -273,7 +273,7 @@ async function geminiRewrite(apiKey, text, account) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = body?.error?.message || ("HTTP " + response.status);
-    throw new Error("gemini:" + detail);
+    throw Object.assign(new Error("gemini:" + detail), { status: 502, expose: true });
   }
 
   let output = (body?.candidates?.[0]?.content?.parts || [])
@@ -282,7 +282,7 @@ async function geminiRewrite(apiKey, text, account) {
     .trim();
 
   output = output.replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
-  if (!output) throw new Error("gemini:empty_response");
+  if (!output) throw Object.assign(new Error("gemini:empty_response"), { status: 502, expose: true });
 
   if (output.length > maxChars) {
     output = output.slice(0, Math.max(1, maxChars - 1)).trimEnd() + "…";
