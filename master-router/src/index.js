@@ -520,6 +520,83 @@ async function saveChildSettings(env, child, body) {
   return { saved: true };
 }
 
+async function requireCollector(env, request) {
+  const provided = request.headers.get("x-collector-secret") || "";
+  if (!provided || !timingSafeEqual(provided, env.COLLECTOR_SECRET)) {
+    throw Object.assign(new Error("unauthorized"), { status: 401 });
+  }
+}
+
+async function collectorSources(env) {
+  const result = await env.DB.prepare(
+    "SELECT id,title,username,channel_id FROM sources WHERE enabled=1 ORDER BY title"
+  ).all();
+  return result.results || [];
+}
+
+async function ingestEvent(env, request) {
+  await requireCollector(env, request);
+  const body = await readJson(request);
+  const source = body.source || {};
+  const username = String(source.username || "").trim().replace(/^@/, "");
+  const channelId = String(source.channel_id || "").trim();
+
+  const matched = await env.DB.prepare(
+    `SELECT id,title,username,channel_id FROM sources
+     WHERE enabled=1
+       AND ((? <> '' AND channel_id=?) OR (? <> '' AND lower(username)=lower(?)))
+     LIMIT 1`
+  ).bind(channelId, channelId, username, username).first();
+
+  if (!matched) throw Object.assign(new Error("source_not_registered"), { status: 404 });
+
+  const children = await env.DB.prepare(
+    `SELECT c.id,c.name,c.web_url
+     FROM children c
+     JOIN child_sources cs ON cs.child_id=c.id
+     JOIN child_settings st ON st.child_id=c.id
+     WHERE cs.source_id=? AND c.status='ready' AND st.enabled=1
+     ORDER BY c.created_at`
+  ).bind(matched.id).all();
+
+  const routed = children.results || [];
+  const externalId = String(body.external_id || "").trim() || null;
+  const eventId = id("evt");
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO ingest_events(id,source_id,external_id,text_content,media_json,routed_children_json,status)
+       VALUES(?,?,?,?,?,?,?)`
+    ).bind(
+      eventId,
+      matched.id,
+      externalId,
+      String(body.text || "").slice(0, 20000),
+      JSON.stringify(Array.isArray(body.media) ? body.media : []),
+      JSON.stringify(routed.map((x) => x.id)),
+      "accepted"
+    ).run();
+  } catch (error) {
+    if (externalId && String(error).toLowerCase().includes("unique")) {
+      return { accepted: false, duplicate: true, source: matched, routed_children: routed.length };
+    }
+    throw error;
+  }
+
+  await audit(env, "collector", "local", "ingest.accepted", "source", matched.id, {
+    event_id: eventId,
+    routed_children: routed.length,
+    external_id: externalId
+  });
+
+  return {
+    accepted: true,
+    event_id: eventId,
+    source: matched,
+    routed_children: routed.map((x) => ({ id: x.id, name: x.name }))
+  };
+}
+
 async function handleApi(request, env) {
   await requireBindings(env);
   const url = new URL(request.url);
