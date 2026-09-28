@@ -53,6 +53,15 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — NEXT
 - Phase 5: real end-to-end Telegram → X test
 
+## v0.1.2 Collector networking hotfix
+
+This release fixes real Windows Collector requests being rejected by Cloudflare Error 1010:
+
+- browser-compatible HTTP request headers for Master health, source sync, and ingest;
+- explicit network-error handling instead of an unhandled Collector exception;
+- initial Source sync retries without killing the Telegram Collector;
+- Collector remains connected and retries Source sync every 60 seconds when Master is temporarily unavailable.
+
 ## v0.1.1 Windows runtime hardening
 
 This release repairs and hardens the real Windows deployment path discovered during the first production install:
