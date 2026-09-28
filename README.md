@@ -53,6 +53,23 @@ The tester only receives a Child Web URL and password. Infrastructure credential
 - Phase 4: Gemini/Buffer processing + X posting — NEXT
 - Phase 5: real end-to-end Telegram → X test
 
+## v0.1.1 Windows runtime hardening
+
+This release repairs and hardens the real Windows deployment path discovered during the first production install:
+
+- compatible random secret generation on **Windows PowerShell 5.1 / .NET Framework**;
+- CI executes the deploy script with the real `powershell.exe`, not only PowerShell 7;
+- native stdin forwarding is tested before using `wrangler secret put`;
+- Worker secret listing is fail-safe: a read/parse failure aborts instead of rotating `MASTER_KEY`;
+- a missing local Collector secret is safely rotated and returned to the desktop app;
+- ANSI/UTF-8 deploy output is cleaned for the Windows GUI;
+- D1 IDs accept Wrangler's `uuid`, `id`, or `database_id` fields;
+- new Cloudflare accounts can create their workers.dev subdomain;
+- failed Child health checks delete the uploaded Child Worker;
+- session expiry uses SQLite datetime parsing instead of raw text comparison;
+- encrypted Gemini/Buffer settings are never silently overwritten after a decrypt failure;
+- deployment health failures report the last real error.
+
 ## v0.1.0 owner workflow
 
 1. Run `X-Master.exe`.

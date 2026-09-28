@@ -29,6 +29,9 @@ jobs:
       - name: UI/schema contract
         run: node test/contract.test.mjs
 
+      - name: Provisioning regressions
+        run: node test/provisioning-regression.test.mjs
+
       - name: Render and syntax-check Child Worker
         working-directory: .
         run: |
