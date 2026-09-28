@@ -20,7 +20,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 APP_NAME = "X-Master"
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 
 ANSI_RE = re.compile(r"\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*[@-~])")
 
@@ -113,7 +113,7 @@ def save_secrets(value: dict):
 HTTP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.2.4"
+    "Chrome/154.0.0.0 Safari/537.36 X-Master/0.2.5"
 )
 
 
