@@ -12,6 +12,9 @@ for (const label of ["Child Webs", "Telegram Catalog", "Logs", "Cloudflare", "Cl
 }
 assert.ok(js.includes("/api/admin/children/preflight"));
 assert.ok(js.includes("/api/admin/children"));
+assert.ok(js.includes("Test Gemini"));
+assert.ok(js.includes("Test full pipeline"));
+assert.ok(js.includes("details_json"));
 assert.ok(html.includes("Copy URL + Password"));
 assert.ok(!html.includes("Thêm Telegram Source"), "manual Source form must be removed");
 
@@ -33,6 +36,8 @@ assert.ok(routerSource.includes("https://api.buffer.com"));
 assert.ok(routerSource.includes('routed_accounts'));
 assert.ok(routerSource.includes("gemini-3.5-flash:generateContent"));
 assert.ok(routerSource.includes("mode: shareNow"));
+assert.ok(routerSource.includes("/test-gemini"));
+assert.ok(routerSource.includes("/test-pipeline"));
 assert.ok(routerSource.includes("processEventRoutes"));
 assert.ok(routerSource.includes("status='posted'"));
 assert.ok(routerSource.includes("status='failed'"));
