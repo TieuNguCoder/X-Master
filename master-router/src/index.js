@@ -194,10 +194,15 @@ async function preflightInfra(infra) {
 }
 
 async function ensureWorkersSubdomain(infra) {
-  const current = await cloudflareRequest(infra, "/workers/subdomain");
-  if (current?.result?.subdomain) return current.result.subdomain;
+  try {
+    const current = await cloudflareRequest(infra, "/workers/subdomain");
+    if (current?.result?.subdomain) return current.result.subdomain;
+  } catch {
+    // A new Cloudflare account may not have a workers.dev subdomain yet.
+  }
 
   const tail = infra.cloudflare_account_id.toLowerCase().replace(/[^a-z0-9]/g, "").slice(-10);
+  let lastError = null;
   for (let i = 0; i < 5; i++) {
     const candidate = "xmaster-" + tail + (i ? "-" + i : "");
     try {
@@ -207,66 +212,80 @@ async function ensureWorkersSubdomain(infra) {
       });
       if (created?.result?.subdomain) return created.result.subdomain;
     } catch (error) {
-      if (i === 4) throw error;
+      lastError = error;
     }
   }
-  throw new Error("cloudflare:workers_subdomain_unavailable");
+  throw Object.assign(
+    new Error("cloudflare:workers_subdomain_unavailable" + (lastError ? ":" + safeError(lastError) : "")),
+    { status: 502, expose: true }
+  );
 }
 
 async function deployChildWorker(infra, child, childSecret, masterRoot) {
   const source = renderChildWorkerSource();
   const workerName = ("xm-" + child.slug + "-" + child.id.slice(-6)).slice(0, 62);
+  let uploaded = false;
 
-  const metadata = {
-    main_module: "worker.js",
-    compatibility_date: "2026-09-18",
-    bindings: [
-      { type: "plain_text", name: "CHILD_ID", text: child.id },
-      { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
-      { type: "secret_text", name: "CHILD_SECRET", text: childSecret }
-    ]
-  };
+  try {
+    const metadata = {
+      main_module: "worker.js",
+      compatibility_date: "2026-09-18",
+      bindings: [
+        { type: "plain_text", name: "CHILD_ID", text: child.id },
+        { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
+        { type: "secret_text", name: "CHILD_SECRET", text: childSecret }
+      ]
+    };
 
-  const form = new FormData();
-  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
-  form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
+    const form = new FormData();
+    form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+    form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
 
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
-    method: "PUT",
-    body: form
-  });
+    await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+      method: "PUT",
+      body: form
+    });
+    uploaded = true;
 
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
-    method: "POST",
-    body: JSON.stringify({ enabled: true })
-  });
+    await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+      method: "POST",
+      body: JSON.stringify({ enabled: true })
+    });
 
-  const subdomain = await ensureWorkersSubdomain(infra);
-  const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
+    const subdomain = await ensureWorkersSubdomain(infra);
+    const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
 
-  let healthy = false;
-  let last = "";
-  for (let i = 0; i < 8; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    try {
-      const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
-      last = await response.text();
-      if (response.ok) {
-        const parsed = JSON.parse(last);
-        if (parsed.ok && parsed.child_id === child.id) {
-          healthy = true;
-          break;
+    let healthy = false;
+    let last = "";
+    for (let i = 0; i < 12; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      try {
+        const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
+        last = await response.text();
+        if (response.ok) {
+          const parsed = JSON.parse(last);
+          if (parsed.ok && parsed.child_id === child.id) {
+            healthy = true;
+            break;
+          }
         }
+      } catch (error) {
+        last = safeError(error);
       }
-    } catch (error) {
-      last = safeError(error);
     }
+    if (!healthy) {
+      throw Object.assign(
+        new Error("child_health_failed:" + last.slice(0, 400)),
+        { status: 502, expose: true }
+      );
+    }
+
+    return { workerName, webUrl };
+  } catch (error) {
+    if (uploaded) await deleteChildWorker(infra, workerName, true);
+    throw error;
   }
-  if (!healthy) throw Object.assign(new Error("child_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
-
-  return { workerName, webUrl };
 }
-
 async function deleteChildWorker(infra, workerName, bestEffort = false) {
   if (!workerName) return;
   try {
@@ -620,7 +639,7 @@ async function handleApi(request, env) {
     return json({
       ok: database,
       service: "x-master-router",
-      version: "0.1.0",
+      version: "0.1.1",
       database,
       architecture: "master-router-child-web",
       collector_ready: Boolean(env.COLLECTOR_SECRET)
