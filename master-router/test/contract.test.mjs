@@ -22,4 +22,6 @@ console.log("contract.test: PASS");
 assert.equal((routerSource.match(/datetime\(expires_at\) > CURRENT_TIMESTAMP/g) || []).length, 2);
 assert.ok(routerSource.includes("settings_decrypt_failed"));
 assert.ok(routerSource.includes("if (uploaded) await deleteChildWorker"));
+assert.ok(routerSource.includes('new Error("password_too_short")'), "password reset must reject short passwords");
+assert.ok(routerSource.includes('path === "/internal/child/health"'), "Master must expose authenticated Child health");
 console.log("session/crypto/rollback hardening contract: PASS");
