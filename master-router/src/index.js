@@ -942,33 +942,45 @@ async function loadAccountSecrets(env, accountId) {
 
 async function adminTestGemini(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
-  const output = await geminiRewrite(
-    secrets.gemini_api_key,
-    "X-Master Gemini connection test. Rewrite this into a short X post.",
+  const provider = accountAiProvider(secrets);
+  if (provider === "gemini_free") {
+    throw Object.assign(new Error("gemini_free_runs_on_collector_test_with_a_real_telegram_post"), { status: 409 });
+  }
+  const output = await rewriteWithProvider(
+    provider,
+    secrets,
+    "X-Master AI connection test. Rewrite this into a short X post.",
     account
   );
-  await audit(env, "admin", admin.id, "x_account.gemini_test_ok", "x_account", account.id, {
+  await audit(env, "admin", admin.id, "x_account.ai_test_ok", "x_account", account.id, {
     child_id: account.child_id,
+    ai_provider: provider,
     output
   });
-  return { ok: true, output };
+  return { ok: true, provider, output };
 }
 
 async function adminTestFullPipeline(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
-  const output = await geminiRewrite(
-    secrets.gemini_api_key,
+  const provider = accountAiProvider(secrets);
+  if (provider === "gemini_free") {
+    throw Object.assign(new Error("gemini_free_runs_on_collector_test_with_a_real_telegram_post"), { status: 409 });
+  }
+  const output = await rewriteWithProvider(
+    provider,
+    secrets,
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
     account
   );
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
     child_id: account.child_id,
+    ai_provider: provider,
     buffer_post_id: post.id,
     buffer_status: post.status || null,
     output
   });
-  return { ok: true, output, post: { id: post.id, status: post.status || null } };
+  return { ok: true, provider, output, post: { id: post.id, status: post.status || null } };
 }
 
 async function adminTestXAccount(env, admin, accountId) {
@@ -987,6 +999,73 @@ async function adminTestXAccount(env, admin, accountId) {
     account: { id: account.id, display_name: account.display_name, child_id: account.child_id, child_name: account.child_name },
     post: { id: post.id, status: post.status || null }
   };
+}
+
+async function completeLocalAiResult(env, request) {
+  await requireCollector(env, request);
+  const body = await readJson(request);
+  const eventId = String(body.event_id || "").trim();
+  const accountId = String(body.account_id || "").trim();
+  if (!eventId || !accountId) throw Object.assign(new Error("local_ai_result_ids_required"), { status: 400 });
+
+  const route = await env.DB.prepare(
+    `SELECT r.status,a.* FROM ingest_account_routes r
+       JOIN x_accounts a ON a.id=r.account_id
+      WHERE r.event_id=? AND r.account_id=?`
+  ).bind(eventId, accountId).first();
+  if (!route) throw Object.assign(new Error("local_ai_route_not_found"), { status: 404 });
+
+  let secrets = {};
+  if (route.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, route.encrypted_json);
+  if (accountAiProvider(secrets) !== "gemini_free") {
+    throw Object.assign(new Error("local_ai_provider_mismatch"), { status: 409 });
+  }
+
+  const localError = String(body.error || "").trim();
+  if (localError) {
+    const detail = ("gemini_free:" + localError).slice(0, 1500);
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
+    ).bind(detail, eventId, accountId).run();
+    await audit(env, "collector", "local", "x_account.post_failed", "x_account", accountId, {
+      event_id: eventId,
+      child_id: route.child_id,
+      ai_provider: "gemini_free",
+      error: detail
+    });
+    return { accepted: true, posted: false, error: detail };
+  }
+
+  const output = String(body.output || "").trim();
+  if (!output) throw Object.assign(new Error("local_ai_output_required"), { status: 400 });
+
+  try {
+    const post = await bufferCreateNow(secrets.buffer_api_key, route.buffer_channel_id, output);
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='posted',error=NULL WHERE event_id=? AND account_id=?"
+    ).bind(eventId, accountId).run();
+    await audit(env, "collector", "local", "x_account.posted", "x_account", accountId, {
+      event_id: eventId,
+      child_id: route.child_id,
+      ai_provider: "gemini_free",
+      buffer_post_id: post.id,
+      buffer_status: post.status || null,
+      output_length: output.length
+    });
+    return { accepted: true, posted: true, post: { id: post.id, status: post.status || null } };
+  } catch (error) {
+    const detail = safeError(error);
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
+    ).bind(detail, eventId, accountId).run().catch(() => {});
+    await audit(env, "collector", "local", "x_account.post_failed", "x_account", accountId, {
+      event_id: eventId,
+      child_id: route.child_id,
+      ai_provider: "gemini_free",
+      error: detail
+    }).catch(() => {});
+    throw error;
+  }
 }
 
 async function requireCollector(env, request) {
@@ -1098,13 +1177,50 @@ async function ingestEvent(env, request, ctx) {
     throw error;
   }
 
+  const paidRoutes = [];
+  const localAiJobs = [];
+  const sourceText = String(body.text || "");
+
   for (const account of routed) {
+    let secrets = {};
+    if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
+    const provider = accountAiProvider(secrets);
+    const status = provider === "gemini_free" ? "local_ai_pending" : "queued";
+
     await env.DB.prepare(
       "INSERT OR IGNORE INTO ingest_account_routes(event_id,account_id,status) VALUES(?,?,?)"
-    ).bind(eventId, account.id, "queued").run();
+    ).bind(eventId, account.id, status).run();
+
+    if (provider === "gemini_free") {
+      if (!secrets.gemini_api_key) {
+        const detail = "gemini_free:gemini_api_key_missing";
+        await env.DB.prepare(
+          "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
+        ).bind(detail, eventId, account.id).run();
+        await audit(env, "system", "router", "x_account.post_failed", "x_account", account.id, {
+          event_id: eventId,
+          child_id: account.child_id,
+          ai_provider: provider,
+          error: detail
+        });
+      } else {
+        localAiJobs.push({
+          event_id: eventId,
+          account_id: account.id,
+          display_name: account.display_name,
+          api_key: secrets.gemini_api_key,
+          model: "gemini-3.1-flash-lite",
+          text: sourceText,
+          content_mode: account.content_mode || "news",
+          x_premium: Boolean(account.x_premium)
+        });
+      }
+    } else {
+      paidRoutes.push(account);
+    }
   }
 
-  const processing = processEventRoutes(env, eventId, routed, String(body.text || ""));
+  const processing = processEventRoutes(env, eventId, paidRoutes, sourceText);
   if (ctx?.waitUntil) ctx.waitUntil(processing);
   else await processing;
 
@@ -1120,6 +1236,7 @@ async function ingestEvent(env, request, ctx) {
     event_id: eventId,
     source: matched,
     routed_children: uniqueChildren.length,
+    local_ai_jobs: localAiJobs,
     routed_accounts: routed.map((x) => ({
       id: x.id,
       display_name: x.display_name,
@@ -1142,6 +1259,10 @@ async function handleApi(request, env, ctx) {
 
   if (path === "/collector/catalog" && request.method === "POST") {
     return json(await syncCollectorCatalog(env, request));
+  }
+
+  if (path === "/collector/local-ai-result" && request.method === "POST") {
+    return json(await completeLocalAiResult(env, request));
   }
 
   if (path === "/ingest" && request.method === "POST") {
