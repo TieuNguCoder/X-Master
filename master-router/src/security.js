@@ -116,8 +116,10 @@ export function cookieValue(request, name) {
 export function slugify(input) {
   return String(input || "")
     .trim()
+    .replace(/[đĐ]/g, "d")
     .toLowerCase()
     .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 42) || "child";
