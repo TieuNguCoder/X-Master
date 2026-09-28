@@ -89,9 +89,11 @@ try {
 
   const premiumNewsPrompt = __test.rewritePrompt(
     "Bitcoin market update with additional context.",
-    { content_mode: "news", x_premium: 1 }
+    { content_mode: "news", x_premium: 1, post_language: "vi-VN" }
   );
   assert.ok(premiumNewsPrompt.prompt.includes("CONTENT MODE: NEWS — PREMIUM/BLUE X ACCOUNT."));
+  assert.ok(premiumNewsPrompt.prompt.includes("TARGET LANGUAGE: Vietnamese (vi-VN)"));
+  assert.ok(premiumNewsPrompt.prompt.includes("Translate SOURCE content as needed."));
   assert.ok(premiumNewsPrompt.maxChars > airdropPrompt.maxChars);
 
   const forcedAirdrop = __test.cleanAiOutput(
