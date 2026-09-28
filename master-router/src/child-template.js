@@ -140,8 +140,10 @@ function renderAccounts(){
     return '<div class="account"><div class="account-head"><div><h3>'+esc(a.display_name)+'</h3><div class="muted">'+(a.x_handle?'@'+esc(a.x_handle):'Chưa ghi X username')+'</div></div><span class="badge '+(a.enabled?'':'off')+'">'+(a.enabled?'RUNNING':'PAUSED')+'</span></div>'+
       '<div class="chips">'+(chips||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
       '<div class="muted" style="margin-top:8px">Gemini: '+(a.gemini_configured?'OK':'chưa có')+' · Buffer: '+(a.buffer_configured?'OK':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
-      '<div class="actions"><button class="edit secondary" data-id="'+esc(a.id)+'">Sửa</button><button class="del danger" data-id="'+esc(a.id)+'">Xóa</button></div></div>';
+      '<div class="muted" style="margin-top:6px">Bài gần nhất: '+esc(a.last_post_status||'chưa có')+(a.last_post_at?' · '+esc(a.last_post_at):'')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</div>'+
+      '<div class="actions"><button class="test secondary" data-id="'+esc(a.id)+'">Test đăng X</button><button class="edit secondary" data-id="'+esc(a.id)+'">Sửa</button><button class="del danger" data-id="'+esc(a.id)+'">Xóa</button></div></div>';
   }).join("")||'<div class="muted">Chưa có tài khoản X.</div>';
+  document.querySelectorAll(".test").forEach(b=>b.onclick=()=>testPost(b.dataset.id));
   document.querySelectorAll(".edit").forEach(b=>b.onclick=()=>beginEdit(b.dataset.id));
   document.querySelectorAll(".del").forEach(b=>b.onclick=()=>removeAccount(b.dataset.id));
   $("#saveBtn").disabled=!editingId&&state.accounts.length>=max;
@@ -191,6 +193,15 @@ async function load(){
 }
 $("#loginForm").onsubmit=async e=>{e.preventDefault();$("#loginStatus").textContent="Đang đăng nhập...";try{await api("/api/login",{method:"POST",body:JSON.stringify({password:$("#password").value})});$("#password").value="";await load();resetForm();}catch(err){$("#loginStatus").textContent="Login failed: "+err.message;}};
 $("#accountForm").onsubmit=async e=>{e.preventDefault();$("#status").textContent="Đang lưu...";try{const path=editingId?"/api/accounts/"+encodeURIComponent(editingId):"/api/accounts";const method=editingId?"PATCH":"POST";await api(path,{method,body:JSON.stringify(payload())});$("#status").textContent="Đã lưu.";resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}};
+async function testPost(id){
+  if(!confirm("Gửi 1 bài test ngay lên X qua Buffer?"))return;
+  $("#status").textContent="Đang gửi bài test...";
+  try{
+    const result=await api("/api/accounts/"+encodeURIComponent(id)+"/test-post",{method:"POST",body:"{}"});
+    $("#status").textContent="Đã gửi bài test qua Buffer. Post ID: "+(result.post?.id||"-");
+    await load();
+  }catch(err){$("#status").textContent="Test đăng X lỗi: "+err.message;}
+}
 async function removeAccount(id){if(!confirm("Xóa tài khoản X này?"))return;try{await api("/api/accounts/"+encodeURIComponent(id),{method:"DELETE"});if(editingId===id)resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}}
 $("#cancelEdit").onclick=resetForm;$("#reloadBtn").onclick=()=>load().catch(err=>$("#status").textContent="Lỗi: "+err.message);
 $("#loadBufferBtn").onclick=loadBufferChannels;
@@ -239,6 +250,8 @@ export default {
     if(url.pathname==="/api/me"&&request.method==="GET") return proxyAuthed(request,env,"/internal/child/me");
     if(url.pathname==="/api/buffer/channels"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/buffer/channels");
     if(url.pathname==="/api/accounts"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/accounts");
+    const tm=url.pathname.match(/^\\/api\\/accounts\\/([^/]+)\\/test-post$/);
+    if(tm&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/accounts/"+encodeURIComponent(tm[1])+"/test-post");
     const m=url.pathname.match(/^\\/api\\/accounts\\/([^/]+)$/);
     if(m&&(request.method==="PATCH"||request.method==="DELETE")) return proxyAuthed(request,env,"/internal/child/accounts/"+encodeURIComponent(m[1]));
     return new Response("Not found",{status:404});
