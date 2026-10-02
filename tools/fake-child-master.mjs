@@ -6,6 +6,16 @@ const sourceCatalog = [
   { id: "src_second", title: "Second Source", username: "second_source", channel_id: "-100456" }
 ];
 let accounts = [];
+const routerSlots = Array.from({ length: 5 }, (_, i) => ({
+  id: "rs_" + (i + 1),
+  child_id: "ch_smoke",
+  slot_index: i + 1,
+  account_id: null,
+  worker_name: "xmr-smoke-r" + (i + 1),
+  web_url: "https://xmr-smoke-r" + (i + 1) + ".workers.dev",
+  status: "ready",
+  assigned: false
+}));
 
 function json(res, body, status = 200, headers = {}) {
   res.writeHead(status, { "content-type": "application/json", ...headers });
@@ -39,8 +49,9 @@ const server = http.createServer(async (req, res) => {
     return json(res, {
       child: { id: "ch_smoke", name: "Tester Smoke", status: "ready" },
       source_catalog: sourceCatalog,
+      router_slots: routerSlots.map((r) => ({ ...r, assigned: Boolean(r.account_id) })),
       accounts,
-      limits: { max_accounts: 5 }
+      limits: { max_accounts: 5, router_slots: 5 }
     });
   }
 
@@ -64,6 +75,8 @@ const server = http.createServer(async (req, res) => {
     const body = JSON.parse(raw || "{}");
     if (accounts.length >= 5) return json(res, { error: "x_account_limit_reached" }, 409);
     const selected = sourceCatalog.filter((s) => (body.source_ids || []).includes(s.id));
+    const slot = routerSlots.find((r) => !r.account_id);
+    if (!slot) return json(res, { error: "router_slot_unavailable" }, 409);
     const account = {
       id: "xa_" + (accounts.length + 1),
       display_name: body.display_name,
@@ -79,9 +92,16 @@ const server = http.createServer(async (req, res) => {
       gemini_configured: (body.ai_provider || "gemini_paid") !== "deepseek_paid" && Boolean(body.ai_api_key),
       deepseek_configured: body.ai_provider === "deepseek_paid" && Boolean(body.ai_api_key),
       buffer_configured: Boolean(body.buffer_api_key),
+      router_slot_id: slot.id,
+      router_slot_index: slot.slot_index,
+      router_worker_name: slot.worker_name,
+      router_url: slot.web_url,
+      router_status: "assigned",
       source_ids: selected.map((s) => s.id),
       sources: selected
     };
+    slot.account_id = account.id;
+    slot.status = "assigned";
     accounts.push(account);
     return json(res, { account }, 201);
   }
@@ -123,6 +143,8 @@ const server = http.createServer(async (req, res) => {
 
   if (match && req.method === "DELETE") {
     const before = accounts.length;
+    const slot = routerSlots.find((r) => r.account_id === match[1]);
+    if (slot) { slot.account_id = null; slot.status = "ready"; }
     accounts = accounts.filter((a) => a.id !== match[1]);
     if (accounts.length === before) return json(res, { error: "x_account_not_found" }, 404);
     return json(res, { deleted: true });
