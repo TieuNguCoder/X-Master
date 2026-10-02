@@ -36,6 +36,7 @@ jobs:
           Pop-Location
           node tools/render-child-worker.mjs
           node --check .tmp-child-worker.mjs
+          node --check .tmp-account-router.mjs
 
       - name: Validate PowerShell
         shell: pwsh
