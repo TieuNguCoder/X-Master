@@ -20,4 +20,12 @@ fieldset{border:1px solid #263b59;border-radius:12px;padding:13px}legend{padding
 .status{margin-top:10px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#a6c8ff}.success-panel{border-color:#2d6945;background:#0c1d17}#shareText{font-family:ui-monospace,Consolas,monospace;resize:none}
 .toast{position:fixed;right:18px;bottom:18px;background:#15243a;border:1px solid #35547d;border-radius:11px;padding:12px 15px;max-width:420px;box-shadow:0 18px 50px #0008}
 .header-actions{display:flex;align-items:center;gap:8px}.chip{display:inline-flex;margin:2px 4px 2px 0;padding:3px 7px;border:1px solid #314968;border-radius:999px;background:#14243a;color:#c5d6eb;font-size:11px}
-@media(max-width:850px){.grid,.two,.three,.cards{grid-template-columns:1fr}.checks{grid-template-columns:1fr}.shell{width:min(100% - 20px,1180px)}header{align-items:center}.button-row{flex-direction:column}}
+@media(max-width:850px){.grid,.two,.three,.cards,.usage-grid{grid-template-columns:1fr}.usage-metric{grid-template-columns:1fr}.usage-metric .metric-value{text-align:left}.checks{grid-template-columns:1fr}.shell{width:min(100% - 20px,1180px)}header{align-items:center}.button-row{flex-direction:column}}
+
+.usage-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:16px}
+.usage-card{border:1px solid #273d5b;background:#091321;border-radius:12px;padding:14px;display:grid;gap:7px}
+.usage-card strong{font-size:24px;line-height:1.1}.usage-card small{color:#9eb0c8}
+.progress{height:8px;border-radius:999px;background:#16253a;overflow:hidden;border:1px solid #2b405f}.progress span{display:block;height:100%;width:0;background:#4f7fd4}
+.usage-warning{margin-top:14px;border:1px solid #6a5120;background:#221a0d;color:#f1d18c;border-radius:12px;padding:12px;white-space:pre-wrap}
+.usage-table{display:grid;gap:8px}.usage-metric{display:grid;grid-template-columns:minmax(220px,1.8fr) minmax(110px,.8fr) minmax(90px,.6fr);gap:12px;align-items:center;border:1px solid #223650;background:#091321;border-radius:10px;padding:11px 12px}
+.usage-metric .metric-name{min-width:0}.usage-metric .metric-name small{display:block;color:#8398b6;margin-top:3px}.usage-metric .metric-value{text-align:right;font-variant-numeric:tabular-nums}.usage-product{margin-top:12px;font-weight:900;color:#b9d2f7}
