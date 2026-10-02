@@ -27,6 +27,23 @@ const server = http.createServer(async (req, res) => {
   for await (const chunk of req) chunks.push(chunk);
   const raw = Buffer.concat(chunks).toString("utf8");
 
+  if (req.url?.startsWith("/internal/router/")) {
+    if (req.headers["x-router-slot"] !== "rs_smoke" || req.headers["x-router-secret"] !== "router-secret") {
+      return json(res, { error: "unauthorized" }, 401);
+    }
+    if (req.url === "/internal/router/health" && req.method === "GET") {
+      return json(res, { ok: true, slot_id: "rs_smoke", child_id: "ch_smoke", slot_index: 1, account_id: "xa_smoke", status: "assigned" });
+    }
+    if (req.url === "/internal/router/process" && req.method === "POST") {
+      const body = JSON.parse(raw || "{}");
+      return json(res, { posted: true, routed: "process", event_id: body.event_id || null, account_id: body.account_id || null });
+    }
+    if (req.url === "/internal/router/publish" && req.method === "POST") {
+      return json(res, { posted: true, post: { id: "post-router-smoke", status: "sent" } });
+    }
+    return json(res, { error: "not_found" }, 404);
+  }
+
   if (req.headers["x-child-id"] !== "ch_smoke" || req.headers["x-child-secret"] !== "child-secret") {
     return json(res, { error: "unauthorized" }, 401);
   }
