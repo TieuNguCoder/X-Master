@@ -47,12 +47,10 @@ export default {
       }
     }
 
-    if(url.pathname==="/process"&&request.method==="POST"){
-      return proxy(request,env,"/internal/router/process");
-    }
-
-    if(url.pathname==="/publish"&&request.method==="POST"){
-      return proxy(request,env,"/internal/router/publish");
+    if((url.pathname==="/process"||url.pathname==="/publish")&&request.method==="POST"){
+      const provided=request.headers.get("x-master-router-secret")||"";
+      if(!provided||provided!==env.ROUTER_SECRET) return json({error:"unauthorized"},401);
+      return proxy(request,env,url.pathname==="/process"?"/internal/router/process":"/internal/router/publish");
     }
 
     return new Response("Not found",{status:404});
