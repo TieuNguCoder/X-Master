@@ -52,26 +52,31 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
       <button id="reloadBtn" class="ghost">Refresh</button>
     </div>
 
+    <article class="panel" style="margin-bottom:18px">
+      <h2>DeepSeek dùng chung cho User Web</h2>
+      <p class="muted">Chỉ cấu hình 1 lần. Tất cả tài khoản X bên dưới dùng chung key này; từng account chỉ cần Buffer + Sources + chế độ bài.</p>
+      <div class="row">
+        <label>DeepSeek API Key<input id="globalDeepseek" type="password" autocomplete="off" placeholder="Nhập DeepSeek API key"></label>
+        <div>
+          <div id="globalAiState" class="muted" style="margin-top:4px">DeepSeek: chưa cấu hình</div>
+          <div class="actions">
+            <button id="saveGlobalAi" type="button">Lưu DeepSeek</button>
+            <button id="testGlobalAi" type="button" class="secondary">Test DeepSeek</button>
+          </div>
+        </div>
+      </div>
+      <div id="globalAiStatus" class="status"></div>
+    </article>
+
     <div class="grid">
       <article class="panel">
         <h2 id="formTitle">Thêm tài khoản X</h2>
-        <p class="muted">Mỗi web con tối đa 5 tài khoản. Mỗi tài khoản có key và danh sách kênh riêng.</p>
+        <p class="muted">Mỗi web con tối đa 5 tài khoản. Chỉ nhập Buffer API Key, kiểm tra Buffer để tự lấy tên/username X; sau đó chọn Sources và kiểu bài.</p>
         <form id="accountForm" class="stack">
           <div class="row">
-            <label>Tên tài khoản<input id="displayName" placeholder="Holly" required></label>
-            <label>X username<input id="xHandle" placeholder="@username"></label>
+            <label>Tên tài khoản<input id="displayName" placeholder="Tự lấy từ Buffer" required readonly></label>
+            <label>X username<input id="xHandle" placeholder="Tự lấy từ Buffer" readonly></label>
           </div>
-          <div class="row">
-            <label>AI Provider
-              <select id="aiProvider">
-                <option value="gemini_free">Gemini Free — chạy trên Collector</option>
-                <option value="gemini_paid">Gemini Paid — chạy trên Master</option>
-                <option value="deepseek_paid">DeepSeek Paid — chạy trên Master</option>
-              </select>
-            </label>
-            <label id="aiKeyLabel">Gemini API Key<input id="aiKey" type="password" autocomplete="off" placeholder="Nhập Gemini API key"></label>
-          </div>
-          <div id="aiHint" class="muted">Gemini Free được gọi từ Collector/PC để dùng IP máy của Owner.</div>
           <label>Buffer API Key<input id="buffer" type="password" autocomplete="off" placeholder="Nhập token"></label>
           <div class="actions">
             <button id="loadBufferBtn" type="button" class="secondary">Kiểm tra Buffer & lấy tài khoản X</button>
@@ -80,11 +85,11 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
             <select id="bufferChannels"></select>
           </label>
           <div class="row">
-            <label>Buffer Channel ID<input id="bufferChannelId" placeholder="Tự điền sau khi chọn tài khoản X"></label>
-            <label>Buffer Channel Name<input id="bufferChannelName" placeholder="Tự điền sau khi chọn tài khoản X"></label>
+            <label>Buffer Channel ID<input id="bufferChannelId" placeholder="Tự điền sau khi kiểm tra Buffer" readonly></label>
+            <label>Buffer Channel Name<input id="bufferChannelName" placeholder="Tự điền sau khi kiểm tra Buffer" readonly></label>
           </div>
           <div class="row">
-            <label>Content mode<select id="mode"><option value="news">News</option><option value="airdrop">Airdrop</option></select></label>
+            <label>Content mode<select id="mode"><option value="both">News + Airdrop (tự nhận diện)</option><option value="news">News</option><option value="airdrop">Airdrop</option></select></label>
             <label>X Premium<select id="premium"><option value="0">Standard</option><option value="1">Blue / Premium</option></select></label>
           </div>
           <div class="row">
@@ -135,8 +140,9 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
 <script>
 const $=s=>document.querySelector(s);
 const esc=v=>String(v??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
-let state={child:null,source_catalog:[],accounts:[],router_slots:[],limits:{max_accounts:5,router_slots:5}};
+let state={child:null,ai_settings:{provider:"deepseek_paid",deepseek_configured:false},source_catalog:[],accounts:[],router_slots:[],limits:{max_accounts:5,router_slots:5}};
 let editingId=null;
+let selectedSourceIds=new Set();
 
 function showLogin(message=""){
   $("#app").classList.add("hidden");
@@ -157,21 +163,21 @@ async function api(path,options={}){
   }
   return b;
 }
-function renderSources(selected=[]){
+function renderSources(){
   const q=$("#sourceSearch").value.trim().toLowerCase();
-  const chosen=new Set(selected||[]);
   const rows=(state.source_catalog||[]).filter(s=>{
     const hay=(String(s.title||"")+" "+String(s.username||"")+" "+String(s.channel_id||"")).toLowerCase();
     return !q||hay.includes(q);
   });
-  $("#sourceChecks").innerHTML=rows.map(s=>'<label class="source"><input type="checkbox" value="'+esc(s.id)+'" '+(chosen.has(s.id)?'checked':'')+'><span><strong>'+esc(s.title)+'</strong><br><span class="muted">'+(s.username?'@'+esc(s.username):esc(s.channel_id||""))+'</span></span></label>').join("")||'<div class="muted">Chưa có kênh. Hãy chạy Collector để đồng bộ danh sách Telegram đã join.</div>';
+  $("#sourceChecks").innerHTML=rows.map(s=>'<label class="source"><input type="checkbox" value="'+esc(s.id)+'" '+(selectedSourceIds.has(String(s.id))?'checked':'')+'><span><strong>'+esc(s.title)+'</strong><br><span class="muted">'+(s.username?'@'+esc(s.username):esc(s.channel_id||""))+'</span></span></label>').join("")||'<div class="muted">Không có kênh phù hợp.</div>';
+  document.querySelectorAll("#sourceChecks input[type=checkbox]").forEach(box=>{
+    box.onchange=()=>{
+      const id=String(box.value);
+      if(box.checked)selectedSourceIds.add(id);else selectedSourceIds.delete(id);
+    };
+  });
 }
-function checkedSources(){return [...document.querySelectorAll("#sourceChecks input:checked")].map(x=>x.value);}
-function aiProviderLabel(provider){
-  if(provider==="gemini_free") return "Gemini Free";
-  if(provider==="deepseek_paid") return "DeepSeek Paid";
-  return "Gemini Paid";
-}
+function checkedSources(){return [...selectedSourceIds];}
 function languageLabel(value){
   const names={"en-US":"English (US)","en-GB":"English (UK)","vi-VN":"Tiếng Việt","ja-JP":"Japanese","ko-KR":"Korean","zh-CN":"Chinese (Simplified)","zh-TW":"Chinese (Traditional)","es-ES":"Spanish","pt-BR":"Portuguese (Brazil)","fr-FR":"French","de-DE":"German","id-ID":"Indonesian","th-TH":"Thai","ru-RU":"Russian","tr-TR":"Turkish","hi-IN":"Hindi","ar-SA":"Arabic"};
   return names[value]||value||"English (US)";
@@ -185,22 +191,6 @@ function selectedPostLanguage(){
 function updateLanguageUi(){
   $("#customLanguageWrap").classList.toggle("hidden",$("#postLanguage").value!=="__custom__");
 }
-function updateAiUi(){
-  const provider=$("#aiProvider").value;
-  if(provider==="deepseek_paid"){
-    $("#aiKeyLabel").childNodes[0].nodeValue="DeepSeek API Key";
-    $("#aiKey").placeholder="Nhập DeepSeek API key";
-    $("#aiHint").textContent="DeepSeek Paid chạy trên Master Router bằng model deepseek-flash.";
-  }else if(provider==="gemini_free"){
-    $("#aiKeyLabel").childNodes[0].nodeValue="Gemini Free API Key";
-    $("#aiKey").placeholder="Nhập Gemini Free API key";
-    $("#aiHint").textContent="Gemini Free chạy trên Collector/PC để tránh giới hạn location của Cloudflare.";
-  }else{
-    $("#aiKeyLabel").childNodes[0].nodeValue="Gemini Paid API Key";
-    $("#aiKey").placeholder="Nhập Gemini Paid API key";
-    $("#aiHint").textContent="Gemini Paid chạy trên Master Router.";
-  }
-}
 function renderAccounts(){
   const max=Number(state.limits?.max_accounts||5);
   const routers=state.router_slots||[];
@@ -211,8 +201,8 @@ function renderAccounts(){
     return '<div class="account"><div class="account-head"><div><h3>'+esc(a.display_name)+'</h3><div class="muted">'+(a.x_handle?'@'+esc(a.x_handle):'Chưa ghi X username')+'</div></div><span class="badge '+(a.enabled?'':'off')+'">'+(a.enabled?'RUNNING':'PAUSED')+'</span></div>'+
       '<div class="chips">'+(chips||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
       '<div class="muted" style="margin-top:8px">Router: '+(a.router_slot_index?'R'+esc(a.router_slot_index)+' · '+esc(a.router_status||'missing'):'MISSING')+' · '+esc(a.router_worker_name||'-')+'</div>'+
-      '<div class="muted" style="margin-top:5px">AI: '+esc(aiProviderLabel(a.ai_provider))+' · '+(a.ai_configured?'configured':'chưa có key')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
-      '<div class="muted" style="margin-top:5px">Format: '+(a.content_mode==="airdrop"?"Airdrop":"News")+' · X: '+(a.x_premium?"Premium / Blue":"Standard")+' · Language: '+esc(languageLabel(a.post_language||"en-US"))+'</div>'+
+      '<div class="muted" style="margin-top:5px">AI: DeepSeek dùng chung · '+(a.ai_configured?'configured':'CHƯA CÓ KEY')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
+      '<div class="muted" style="margin-top:5px">Format: '+(a.content_mode==="both"?"News + Airdrop":(a.content_mode==="airdrop"?"Airdrop":"News"))+' · X: '+(a.x_premium?"Premium / Blue":"Standard")+' · Language: '+esc(languageLabel(a.post_language||"en-US"))+'</div>'+
       '<div class="muted" style="margin-top:6px">Bài gần nhất: '+esc(a.last_post_status||'chưa có')+(a.last_post_at?' · '+esc(a.last_post_at):'')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</div>'+
       '<div class="actions"><button class="test secondary" data-id="'+esc(a.id)+'">Test đăng X</button><button class="edit secondary" data-id="'+esc(a.id)+'">Sửa</button><button class="del danger" data-id="'+esc(a.id)+'">Xóa</button></div></div>';
   }).join("")||'<div class="muted">Chưa có tài khoản X.</div>';
