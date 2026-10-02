@@ -79,6 +79,51 @@ try {
   assert.equal(deleteCalled, true, "orphan Child Worker must be deleted after health failure");
   console.log("child health failure rollback DELETE: PASS");
 
+  const routerName = __test.accountRouterWorkerName(
+    { id: "ch_1234567890", name: "Tester Alpha", slug: "tester-alpha" },
+    3
+  );
+  assert.ok(routerName.includes("-r3-"));
+  assert.ok(routerName.startsWith("xmr-tester-alpha"));
+
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    if (u.includes("/workers/scripts/") && method === "PUT") {
+      return cfJson({ success: true, result: {} });
+    }
+    if (u.includes("/workers/scripts/") && u.endsWith("/subdomain") && method === "POST") {
+      return cfJson({ success: true, result: {} });
+    }
+    if (u.endsWith("/workers/subdomain") && method === "GET") {
+      return cfJson({ success: true, result: { subdomain: "xmaster-test" } });
+    }
+    if (u.startsWith("https://xmr-") && u.endsWith(".xmaster-test.workers.dev/health")) {
+      return cfJson({
+        ok: true,
+        slot_id: "rs_smoke",
+        child_id: "ch_1234567890",
+        master: true
+      });
+    }
+    throw new Error("unexpected router fetch: " + u + " " + method);
+  };
+
+  const routerDeploy = await __test.deployAccountRouterWorker(
+    {
+      CF_ACCOUNT_ID: "account123456",
+      CF_API_TOKEN: "token-12345678901234567890"
+    },
+    { id: "ch_1234567890", name: "Tester Alpha", slug: "tester-alpha" },
+    "rs_smoke",
+    3,
+    "router-secret",
+    "https://master.example"
+  );
+  assert.ok(routerDeploy.workerName.includes("-r3-"));
+  assert.ok(routerDeploy.webUrl.endsWith(".xmaster-test.workers.dev"));
+  console.log("account router Worker deploy + health: PASS");
+
   const airdropPrompt = __test.rewritePrompt(
     "Qyrolabs waitlist is open. Reward: XP. Join https://qyrolabs.space and complete the tasks.",
     { content_mode: "airdrop", x_premium: 0 }
