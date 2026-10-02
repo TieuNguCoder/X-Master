@@ -746,22 +746,23 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
       if (!forceUpdate && current && current.web_url && (current.status === "ready" || current.status === "assigned")) continue;
 
       const slotId = current?.id || id("rs");
-      const routerSecret = randomHex(32);
-      const routerSecretHash = await hmacHex(env.SESSION_PEPPER, routerSecret);
-      const encryptedJson = await encryptJson(env.MASTER_KEY, { router_secret: routerSecret });
+      let routerSecret = "";
+      let routerSecretHash = "";
+      let encryptedJson = "";
 
       if (!current) {
+        routerSecret = randomHex(32);
+        routerSecretHash = await hmacHex(env.SESSION_PEPPER, routerSecret);
+        encryptedJson = await encryptJson(env.MASTER_KEY, { router_secret: routerSecret });
         await env.DB.prepare(
           `INSERT INTO child_router_slots(
              id,child_id,slot_index,worker_name,router_secret_hash,encrypted_json,status
            ) VALUES(?,?,?,?,?,?,?)`
         ).bind(slotId, child.id, slotIndex, accountRouterWorkerName(child, slotIndex), routerSecretHash, encryptedJson, "provisioning").run();
       } else {
-        await env.DB.prepare(
-          `UPDATE child_router_slots
-              SET router_secret_hash=?,encrypted_json=?,status='provisioning',last_error=NULL,updated_at=CURRENT_TIMESTAMP
-            WHERE id=?`
-        ).bind(routerSecretHash, encryptedJson, slotId).run();
+        const stored = await decryptJson(env.MASTER_KEY, current.encrypted_json);
+        routerSecret = String(stored.router_secret || "");
+        if (!routerSecret) throw Object.assign(new Error("router_secret_missing"), { status: 500 });
       }
 
       let deployed;
@@ -770,9 +771,15 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
           env, child, slotId, slotIndex, routerSecret, masterRoot, !current
         );
       } catch (error) {
-        await env.DB.prepare(
-          "UPDATE child_router_slots SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
-        ).bind(safeError(error), slotId).run().catch(() => {});
+        if (current) {
+          await env.DB.prepare(
+            "UPDATE child_router_slots SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+          ).bind(safeError(error), slotId).run().catch(() => {});
+        } else {
+          await env.DB.prepare(
+            "UPDATE child_router_slots SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+          ).bind(safeError(error), slotId).run().catch(() => {});
+        }
         throw error;
       }
       await env.DB.prepare(
