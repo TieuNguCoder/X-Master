@@ -646,7 +646,8 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
       bindings: [
         { type: "plain_text", name: "CHILD_ID", text: child.id },
         { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
-        { type: "secret_text", name: "CHILD_SECRET", text: childSecret }
+        { type: "secret_text", name: "CHILD_SECRET", text: childSecret },
+        { type: "service", name: "MASTER", service: "x-master-router" }
       ]
     };
 
@@ -667,31 +668,6 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
 
     const subdomain = await ensureWorkersSubdomain(infra);
     const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
-
-    let healthy = false;
-    let last = "";
-    for (let i = 0; i < 12; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      try {
-        const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
-        last = await response.text();
-        if (response.ok) {
-          const parsed = JSON.parse(last);
-          if (parsed.ok && parsed.child_id === child.id) {
-            healthy = true;
-            break;
-          }
-        }
-      } catch (error) {
-        last = safeError(error);
-      }
-    }
-    if (!healthy) {
-      throw Object.assign(
-        new Error("child_health_failed:" + last.slice(0, 400)),
-        { status: 502, expose: true }
-      );
-    }
 
     return { workerName, webUrl };
   } catch (error) {
@@ -745,28 +721,6 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
   const subdomain = await ensureWorkersSubdomain(infra);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
 
-  let healthy = false;
-  let last = "";
-  for (let i = 0; i < 12; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    try {
-      const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
-      last = await response.text();
-      if (response.ok) {
-        const parsed = JSON.parse(last);
-        if (parsed.ok && parsed.slot_id === slotId && parsed.child_id === child.id) {
-          healthy = true;
-          break;
-        }
-      }
-    } catch (error) {
-      last = safeError(error);
-    }
-  }
-  if (!healthy) {
-    if (deleteOnFailure) await deleteChildWorker(infra, workerName, true);
-    throw Object.assign(new Error("account_router_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
-  }
   return { workerName, webUrl };
 }
 
@@ -824,7 +778,7 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
       await env.DB.prepare(
         `UPDATE child_router_slots
             SET worker_name=?,web_url=?,status=CASE WHEN account_id IS NULL THEN 'ready' ELSE 'assigned' END,
-                last_health_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+                last_error=NULL,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`
       ).bind(deployed.workerName, deployed.webUrl, slotId).run();
       created.push({ id: slotId, worker_name: deployed.workerName, was_existing: Boolean(current) });
@@ -1279,7 +1233,7 @@ async function createChild(env, request, admin) {
     const routerSlots = await ensureChildRouterSlots(env, { ...child, worker_name: workerName, web_url: deployedResult.webUrl }, masterRoot);
 
     await env.DB.prepare(
-      "UPDATE children SET status='ready',last_health_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+      "UPDATE children SET status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(childId).run();
 
     await env.DB.prepare(
@@ -1387,7 +1341,8 @@ async function updateChildWorkerCode(env, request, admin, childId) {
     bindings: [
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
-      { type: "secret_text", name: "CHILD_SECRET", text: childSecret }
+      { type: "secret_text", name: "CHILD_SECRET", text: childSecret },
+      { type: "service", name: "MASTER", service: "x-master-router" }
     ]
   };
   const form = new FormData();
@@ -1417,34 +1372,8 @@ async function updateChildWorkerCode(env, request, admin, childId) {
     ).bind(updatedInfra, childId)
   ]);
 
-  let healthy = false;
-  let last = "";
-  for (let i = 0; i < 12; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    try {
-      const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
-      last = await response.text();
-      if (response.ok) {
-        const parsed = JSON.parse(last);
-        if (parsed.ok && parsed.child_id === childId) {
-          healthy = true;
-          break;
-        }
-      }
-    } catch (error) {
-      last = safeError(error);
-    }
-  }
-
-  if (!healthy) {
-    await env.DB.prepare(
-      "UPDATE children SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
-    ).bind(("child_update_health_failed:" + last).slice(0, 1200), childId).run();
-    throw Object.assign(new Error("child_update_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
-  }
-
   await env.DB.prepare(
-    "UPDATE children SET last_health_at=CURRENT_TIMESTAMP,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+    "UPDATE children SET status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(childId).run();
   const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot, true);
   await audit(env, "admin", admin.id, "child.code_updated", "child", childId, {
