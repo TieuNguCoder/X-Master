@@ -567,6 +567,7 @@ async function processAccountRoute(env, eventId, account, sourceText) {
       source_length: String(sourceText || "").length,
       output_length: rewritten.length
     });
+    return { posted: true, post: { id: post.id, status: post.status || null }, output: rewritten };
   } catch (error) {
     const detail = safeError(error);
     await env.DB.prepare(
@@ -577,11 +578,32 @@ async function processAccountRoute(env, eventId, account, sourceText) {
       child_id: account.child_id,
       error: detail
     }).catch(() => {});
+    return { posted: false, error: detail };
   }
 }
 
 async function processEventRoutes(env, eventId, routed, sourceText) {
-  await Promise.all(routed.map((account) => processAccountRoute(env, eventId, account, sourceText)));
+  await Promise.all(routed.map(async (account) => {
+    try {
+      return await invokeAccountRouter(env, account, "/process", {
+        event_id: eventId,
+        account_id: account.id,
+        text: sourceText
+      });
+    } catch (error) {
+      const detail = safeError(error);
+      await env.DB.prepare(
+        "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
+      ).bind(detail, eventId, account.id).run().catch(() => {});
+      await audit(env, "system", "router", "x_account.router_failed", "x_account", account.id, {
+        event_id: eventId,
+        child_id: account.child_id,
+        router_slot_id: account.router_slot_id || null,
+        error: detail
+      }).catch(() => {});
+      return { posted: false, error: detail };
+    }
+  }));
 }
 
 async function preflightInfra(env, childInfra) {
@@ -1541,29 +1563,101 @@ async function completeLocalAiResult(env, request) {
   const output = String(body.output || "").trim();
   if (!output) throw Object.assign(new Error("local_ai_output_required"), { status: 400 });
 
+  const router = await env.DB.prepare(
+    `SELECT id AS router_slot_id,web_url AS router_url,status AS router_status
+       FROM child_router_slots WHERE account_id=? LIMIT 1`
+  ).bind(accountId).first();
+  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
+
+  return invokeAccountRouter(env, {
+    ...route,
+    router_slot_id: router.router_slot_id,
+    router_url: router.router_url,
+    router_status: router.router_status
+  }, "/publish", {
+    event_id: eventId,
+    account_id: accountId,
+    output
+  });
+}
+
+async function internalRouterHealth(env, request) {
+  const slot = await verifyRouterCaller(env, request);
+  return {
+    ok: slot.status === "ready" || slot.status === "assigned",
+    slot_id: slot.id,
+    child_id: slot.child_id,
+    slot_index: Number(slot.slot_index),
+    account_id: slot.account_id || null,
+    status: slot.status
+  };
+}
+
+async function internalRouterProcess(env, request) {
+  const slot = await verifyRouterCaller(env, request);
+  if (!slot.account_id) throw Object.assign(new Error("router_slot_unassigned"), { status: 409 });
+  const body = await readJson(request);
+  const eventId = String(body.event_id || "").trim();
+  const accountId = String(body.account_id || "").trim();
+  if (!eventId || accountId !== slot.account_id) {
+    throw Object.assign(new Error("router_account_mismatch"), { status: 409 });
+  }
+
+  const account = await env.DB.prepare(
+    "SELECT * FROM x_accounts WHERE id=? AND child_id=? AND enabled=1"
+  ).bind(slot.account_id, slot.child_id).first();
+  if (!account) throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
+
+  let secrets = {};
+  if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
+  if (accountAiProvider(secrets) === "gemini_free") {
+    throw Object.assign(new Error("gemini_free_requires_collector"), { status: 409 });
+  }
+  return processAccountRoute(env, eventId, account, String(body.text || ""));
+}
+
+async function internalRouterPublish(env, request) {
+  const slot = await verifyRouterCaller(env, request);
+  if (!slot.account_id) throw Object.assign(new Error("router_slot_unassigned"), { status: 409 });
+  const body = await readJson(request);
+  const eventId = String(body.event_id || "").trim();
+  const accountId = String(body.account_id || "").trim();
+  const output = String(body.output || "").trim();
+  if (!eventId || accountId !== slot.account_id || !output) {
+    throw Object.assign(new Error("router_publish_payload_invalid"), { status: 400 });
+  }
+
+  const account = await env.DB.prepare(
+    "SELECT * FROM x_accounts WHERE id=? AND child_id=? AND enabled=1"
+  ).bind(slot.account_id, slot.child_id).first();
+  if (!account) throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
+
+  let secrets = {};
+  if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
+
   try {
-    const post = await bufferCreateNow(secrets.buffer_api_key, route.buffer_channel_id, output);
+    const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
     await env.DB.prepare(
       "UPDATE ingest_account_routes SET status='posted',error=NULL WHERE event_id=? AND account_id=?"
-    ).bind(eventId, accountId).run();
-    await audit(env, "collector", "local", "x_account.posted", "x_account", accountId, {
+    ).bind(eventId, account.id).run();
+    await audit(env, "router", slot.id, "x_account.posted", "x_account", account.id, {
       event_id: eventId,
-      child_id: route.child_id,
-      ai_provider: "gemini_free",
+      child_id: account.child_id,
+      router_slot_id: slot.id,
       buffer_post_id: post.id,
       buffer_status: post.status || null,
       output_length: output.length
     });
-    return { accepted: true, posted: true, post: { id: post.id, status: post.status || null } };
+    return { posted: true, post: { id: post.id, status: post.status || null } };
   } catch (error) {
     const detail = safeError(error);
     await env.DB.prepare(
       "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
-    ).bind(detail, eventId, accountId).run().catch(() => {});
-    await audit(env, "collector", "local", "x_account.post_failed", "x_account", accountId, {
+    ).bind(detail, eventId, account.id).run().catch(() => {});
+    await audit(env, "router", slot.id, "x_account.post_failed", "x_account", account.id, {
       event_id: eventId,
-      child_id: route.child_id,
-      ai_provider: "gemini_free",
+      child_id: account.child_id,
+      router_slot_id: slot.id,
       error: detail
     }).catch(() => {});
     throw error;
@@ -1646,12 +1740,14 @@ async function ingestEvent(env, request, ctx) {
 
   const routedResult = await env.DB.prepare(
     `SELECT a.id,a.display_name,a.x_handle,a.child_id,a.encrypted_json,a.buffer_channel_id,
-            a.content_mode,a.x_premium,c.name AS child_name,c.web_url
+            a.content_mode,a.x_premium,c.name AS child_name,c.web_url,
+            rs.id AS router_slot_id,rs.web_url AS router_url,rs.status AS router_status
        FROM x_accounts a
        JOIN x_account_sources xs ON xs.account_id=a.id
        JOIN children c ON c.id=a.child_id
+       LEFT JOIN child_router_slots rs ON rs.account_id=a.id
       WHERE xs.source_id=? AND a.enabled=1 AND c.status='ready'
-      ORDER BY c.created_at,a.created_at`
+      ORDER BY c.created_at,COALESCE(rs.slot_index,99),a.created_at`
   ).bind(matched.id).all();
 
   const routed = routedResult.results || [];
