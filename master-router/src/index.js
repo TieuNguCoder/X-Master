@@ -737,7 +737,7 @@ function accountRouterWorkerName(child, slotIndex) {
   return ("xmr-" + base + "-r" + slotIndex + "-" + child.id.slice(-5)).slice(0, 62);
 }
 
-async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot) {
+async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot, deleteOnFailure = true) {
   const infra = masterCloudflareInfra(env);
   const source = renderAccountRouterSource();
   const workerName = accountRouterWorkerName(child, slotIndex);
@@ -787,7 +787,7 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
     }
   }
   if (!healthy) {
-    await deleteChildWorker(infra, workerName, true);
+    if (deleteOnFailure) await deleteChildWorker(infra, workerName, true);
     throw Object.assign(new Error("account_router_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
   }
   return { workerName, webUrl };
@@ -833,18 +833,29 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
         ).bind(routerSecretHash, encryptedJson, slotId).run();
       }
 
-      const deployed = await deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot);
+      let deployed;
+      try {
+        deployed = await deployAccountRouterWorker(
+          env, child, slotId, slotIndex, routerSecret, masterRoot, !current
+        );
+      } catch (error) {
+        await env.DB.prepare(
+          "UPDATE child_router_slots SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+        ).bind(safeError(error), slotId).run().catch(() => {});
+        throw error;
+      }
       await env.DB.prepare(
         `UPDATE child_router_slots
             SET worker_name=?,web_url=?,status=CASE WHEN account_id IS NULL THEN 'ready' ELSE 'assigned' END,
                 last_health_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP
           WHERE id=?`
       ).bind(deployed.workerName, deployed.webUrl, slotId).run();
-      created.push({ id: slotId, worker_name: deployed.workerName });
+      created.push({ id: slotId, worker_name: deployed.workerName, was_existing: Boolean(current) });
     }
   } catch (error) {
     const infra = masterCloudflareInfra(env);
     for (const item of created) {
+      if (item.was_existing) continue;
       await deleteChildWorker(infra, item.worker_name, true);
       await env.DB.prepare("DELETE FROM child_router_slots WHERE id=?").bind(item.id).run().catch(() => {});
     }
