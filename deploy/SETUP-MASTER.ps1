@@ -220,6 +220,10 @@ try {
   if ($existing -notcontains "MASTER_KEY") { Put-Secret "MASTER_KEY" (New-RandomSecret 64) }
   if ($existing -notcontains "SESSION_PEPPER") { Put-Secret "SESSION_PEPPER" (New-RandomSecret 64) }
 
+  # The Master Router owns one Cloudflare account/token and provisions every User Web + account router.
+  Put-Secret "CF_ACCOUNT_ID" $AccountId
+  Put-Secret "CF_API_TOKEN" $ApiToken
+
   $env:X_MASTER_ADMIN_PASSWORD = $AdminPassword
   $hash = (& $Node (Join-Path $RouterDir "tools\hash-admin-password.mjs") 2>&1 | Out-String).Trim()
   $hashExitCode = $LASTEXITCODE
