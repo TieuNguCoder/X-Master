@@ -278,6 +278,39 @@ try {
   assert.ok(forcedAirdrop.includes("#Airdrop"));
   assert.ok(forcedAirdrop.includes("#Web3"));
 
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u === "https://api.cloudinary.com/v1_1/cloud-smoke/image/upload") {
+      assert.equal(init.method, "POST");
+      assert.equal(init.headers.Authorization, "Basic " + btoa("key-smoke:secret-smoke"));
+      assert.ok(init.body instanceof FormData);
+      const file = init.body.get("file");
+      assert.ok(String(file).startsWith("data:image/jpeg;base64,"));
+      return cfJson({
+        secure_url: "https://res.cloudinary.com/cloud-smoke/image/upload/x-master-smoke.jpg",
+        public_id: "x-master-smoke",
+        width: 1200,
+        height: 800
+      });
+    }
+    throw new Error("unexpected Cloudinary fetch: " + u);
+  };
+  const uploadedImage = await __test.uploadCloudinaryImage(
+    {
+      cloudinary_cloud_name: "cloud-smoke",
+      cloudinary_api_key: "key-smoke",
+      cloudinary_api_secret: "secret-smoke"
+    },
+    {
+      kind: "image",
+      mime_type: "image/jpeg",
+      data_base64: Buffer.from("fake-image").toString("base64")
+    }
+  );
+  assert.equal(uploadedImage.kind, "image");
+  assert.ok(uploadedImage.url.startsWith("https://res.cloudinary.com/"));
+  console.log("Cloudinary Telegram image upload: PASS");
+
   const postingCalls = [];
   globalThis.fetch = async (url, init = {}) => {
     postingCalls.push({ url: String(url), init });
