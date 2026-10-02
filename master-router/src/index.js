@@ -179,6 +179,129 @@ async function cloudflareRequest(infra, path, init = {}) {
 }
 
 
+async function cloudflareUsageSummary(env) {
+  const infra = masterCloudflareInfra(env);
+
+  let workerCount = null;
+  let workerNames = [];
+  try {
+    const scripts = await cloudflareRequest(infra, "/workers/scripts?per_page=1000", { method: "GET" });
+    const rows = Array.isArray(scripts?.result) ? scripts.result : [];
+    workerNames = rows.map((x) => String(x?.id || x?.name || "")).filter(Boolean);
+    workerCount = workerNames.length;
+  } catch (error) {
+    workerCount = null;
+  }
+
+  const billingUrl =
+    "https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id + "/billable/usage";
+  const response = await fetch(billingUrl, {
+    method: "GET",
+    headers: { Authorization: "Bearer " + infra.cloudflare_api_token }
+  });
+  const text = await response.text();
+  let body = {};
+  try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
+
+  if (!response.ok || body.success === false) {
+    const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") ||
+      body.raw || ("HTTP " + response.status);
+    const billingPermissionRequired = response.status === 401 || response.status === 403 ||
+      /permission|authorization|authentication|access/i.test(detail);
+    return {
+      ok: true,
+      account_id_masked: infra.cloudflare_account_id.slice(0, 6) + "…" + infra.cloudflare_account_id.slice(-4),
+      worker_count: workerCount,
+      worker_limit_reference: 500,
+      worker_names: workerNames,
+      billing: {
+        available: false,
+        permission_required: billingPermissionRequired,
+        status: response.status,
+        error: detail
+      }
+    };
+  }
+
+  const rows = Array.isArray(body.result) ? body.result : [];
+  const grouped = new Map();
+  let totalCost = 0;
+  let costAvailable = false;
+  let currency = null;
+  let periodStart = null;
+  let periodEnd = null;
+
+  for (const row of rows) {
+    const metricId = String(row.x_BillableMetricId || row.x_BillableMetricName || row.ChargeDescription || "unknown");
+    const metricName = String(row.x_BillableMetricName || row.ChargeDescription || metricId);
+    const product = String(row.x_ProductFamilyName || row.ServiceFamilyName || row.x_ProductCategoryName || "Other");
+    const unit = String(row.ConsumedUnit || row.PricingUnit || "units");
+    const key = product + "\u0000" + metricId + "\u0000" + unit;
+    const quantity = Number(row.ConsumedQuantity || 0);
+    const rawCost = row.BilledCost ?? row.EffectiveCost ?? row.ContractedCost;
+    const numericCost = rawCost == null ? null : Number(rawCost);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        product,
+        metric_id: metricId,
+        metric_name: metricName,
+        unit,
+        quantity: 0,
+        billed_cost: 0,
+        cost_available: false
+      });
+    }
+    const item = grouped.get(key);
+    item.quantity += Number.isFinite(quantity) ? quantity : 0;
+    if (numericCost != null && Number.isFinite(numericCost)) {
+      item.billed_cost += numericCost;
+      item.cost_available = true;
+      totalCost += numericCost;
+      costAvailable = true;
+    }
+
+    currency = currency || row.BillingCurrency || null;
+    const rowStart = row.BillingPeriodStart || row.ChargePeriodStart || null;
+    const rowEnd = row.BillingPeriodEnd || row.ChargePeriodEnd || null;
+    if (rowStart && (!periodStart || rowStart < periodStart)) periodStart = rowStart;
+    if (rowEnd && (!periodEnd || rowEnd > periodEnd)) periodEnd = rowEnd;
+  }
+
+  const metrics = [...grouped.values()].sort((a, b) =>
+    a.product.localeCompare(b.product) || a.metric_name.localeCompare(b.metric_name)
+  );
+  const products = {};
+  for (const metric of metrics) {
+    if (!products[metric.product]) products[metric.product] = { metrics: 0, billed_cost: 0, cost_available: false };
+    products[metric.product].metrics += 1;
+    if (metric.cost_available) {
+      products[metric.product].billed_cost += metric.billed_cost;
+      products[metric.product].cost_available = true;
+    }
+  }
+
+  return {
+    ok: true,
+    account_id_masked: infra.cloudflare_account_id.slice(0, 6) + "…" + infra.cloudflare_account_id.slice(-4),
+    worker_count: workerCount,
+    worker_limit_reference: 500,
+    worker_names: workerNames,
+    billing: {
+      available: true,
+      permission_required: false,
+      period_start: periodStart,
+      period_end: periodEnd,
+      currency,
+      total_billed_cost: totalCost,
+      cost_available: costAvailable,
+      records: rows.length,
+      products,
+      metrics
+    }
+  };
+}
+
 async function cloudflareWorkerProbe(infra, workerName) {
   const response = await fetch(
     "https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id +
@@ -2175,6 +2298,10 @@ async function handleApi(request, env, ctx) {
         sources: await listSources(env),
         children: await listChildren(env)
       });
+    }
+
+    if (path === "/api/admin/cloudflare-usage" && request.method === "GET") {
+      return json(await cloudflareUsageSummary(env));
     }
 
     if (path === "/api/admin/sources" && request.method === "GET") {
