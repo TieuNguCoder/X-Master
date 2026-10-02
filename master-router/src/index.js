@@ -725,7 +725,7 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
       { type: "secret_text", name: "ROUTER_SECRET", text: routerSecret },
-      { type: "service", name: "MASTER", service: "x-master-router", environment: "production" }
+      { type: "service", name: "MASTER", service: "x-master-router" }
     ]
   };
 
