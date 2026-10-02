@@ -10,6 +10,7 @@ import {
   verifyPassword
 } from "./security.js";
 import { renderChildWorkerSource } from "./child-template.js";
+import { renderAccountRouterSource } from "./account-router-template.js";
 
 const ADMIN_COOKIE = "xm_admin";
 const CHILD_COOKIE = "xm_child";
@@ -62,7 +63,7 @@ async function audit(env, actorType, actorId, action, targetType = null, targetI
 
 async function requireBindings(env) {
   const missing = [];
-  for (const key of ["DB", "MASTER_KEY", "SESSION_PEPPER", "ADMIN_PASSWORD_HASH", "COLLECTOR_SECRET"]) {
+  for (const key of ["DB", "MASTER_KEY", "SESSION_PEPPER", "ADMIN_PASSWORD_HASH", "COLLECTOR_SECRET", "CF_ACCOUNT_ID", "CF_API_TOKEN"]) {
     if (!env[key]) missing.push(key);
   }
   if (missing.length) throw Object.assign(new Error("missing_bindings:" + missing.join(",")), { status: 503 });
@@ -135,18 +136,25 @@ function normalizeSource(body) {
   return { title, username, channelId };
 }
 
-function normalizeInfra(body) {
+function normalizeChildInfra(body) {
   const infra = {
-    cloudflare_account_id: String(body.cloudflare_account_id || "").trim(),
-    cloudflare_api_token: String(body.cloudflare_api_token || "").trim(),
     cloudinary_cloud_name: String(body.cloudinary_cloud_name || "").trim(),
     cloudinary_api_key: String(body.cloudinary_api_key || "").trim(),
     cloudinary_api_secret: String(body.cloudinary_api_secret || "").trim()
   };
-  if (infra.cloudflare_account_id.length < 8) throw Object.assign(new Error("cloudflare_account_id_required"), { status: 400 });
-  if (infra.cloudflare_api_token.length < 16) throw Object.assign(new Error("cloudflare_api_token_required"), { status: 400 });
   if (!infra.cloudinary_cloud_name || !infra.cloudinary_api_key || !infra.cloudinary_api_secret) {
     throw Object.assign(new Error("cloudinary_credentials_required"), { status: 400 });
+  }
+  return infra;
+}
+
+function masterCloudflareInfra(env) {
+  const infra = {
+    cloudflare_account_id: String(env.CF_ACCOUNT_ID || "").trim(),
+    cloudflare_api_token: String(env.CF_API_TOKEN || "").trim()
+  };
+  if (infra.cloudflare_account_id.length < 8 || infra.cloudflare_api_token.length < 16) {
+    throw Object.assign(new Error("master_cloudflare_credentials_missing"), { status: 503 });
   }
   return infra;
 }
