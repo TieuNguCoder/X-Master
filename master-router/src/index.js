@@ -2613,6 +2613,14 @@ async function handleApi(request, env, ctx) {
       return json(await childMe(env, child));
     }
 
+    if (path === "/internal/child/settings/ai" && request.method === "POST") {
+      return json(await saveChildAiSettings(env, child, await readJson(request)));
+    }
+
+    if (path === "/internal/child/settings/ai/test" && request.method === "POST") {
+      return json(await testChildDeepseek(env, child));
+    }
+
     if (path === "/internal/child/buffer/channels" && request.method === "POST") {
       const body = await readJson(request);
       return json({ channels: await bufferXChannels(body.buffer_api_key) });
