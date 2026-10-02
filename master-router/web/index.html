@@ -12,7 +12,7 @@
     <div>
       <div class="eyebrow">X-MASTER</div>
       <h1>Master Router</h1>
-      <p>Telegram Catalog → Child Webs → X Accounts</p>
+      <p>Telegram Catalog → User Webs → 5 Account Routers → X</p>
     </div>
     <div class="header-actions">
       <span id="healthBadge" class="badge muted">CHECKING</span>
@@ -36,7 +36,7 @@
 
     <section id="app" class="hidden">
       <nav class="tabs">
-        <button class="tab active" data-tab="children">Child Webs</button>
+        <button class="tab active" data-tab="children">User Webs</button>
         <button class="tab" data-tab="sources">Telegram Catalog</button>
         <button class="tab" data-tab="audit">Logs</button>
       </nav>
@@ -44,9 +44,9 @@
       <section id="tab-children" class="tabpage">
         <div class="grid">
           <article class="panel">
-            <div class="eyebrow">CREATE CHILD</div>
-            <h2>Tạo web con</h2>
-            <p class="muted">Nhập đủ hạ tầng một lần. Tester sẽ không thấy các key này.</p>
+            <div class="eyebrow">CREATE USER</div>
+            <h2>Tạo User Web + 5 Router</h2>
+            <p class="muted">Cloudflare dùng chung Account ID + API Token của Master. Mỗi User chỉ cần Cloudinary riêng.</p>
 
             <form id="childForm" class="stack">
               <div class="two">
@@ -58,17 +58,7 @@
                 </label>
               </div>
 
-              <fieldset>
-                <legend>Cloudflare</legend>
-                <div class="two">
-                  <label>Account ID
-                    <input id="cfAccount" required>
-                  </label>
-                  <label>API Token
-                    <input id="cfToken" type="password" required autocomplete="off">
-                  </label>
-                </div>
-              </fieldset>
+              <div class="status">Cloudflare: dùng key trung tâm của Master Router, không cần nhập lại.</div>
 
               <fieldset>
                 <legend>Cloudinary</legend>
@@ -86,8 +76,8 @@
               </fieldset>
 
               <div class="button-row">
-                <button type="button" id="preflightBtn" class="secondary">1. Test API</button>
-                <button type="submit">2. Deploy Child Web</button>
+                <button type="button" id="preflightBtn" class="secondary">1. Test Master + Cloudinary</button>
+                <button type="submit">2. Deploy User + 5 Routers</button>
               </div>
             </form>
             <div id="deployStatus" class="status"></div>
@@ -105,8 +95,8 @@
         <article class="panel">
           <div class="section-head">
             <div>
-              <div class="eyebrow">CHILD WEBS</div>
-              <h2>Web con đang quản lý</h2>
+              <div class="eyebrow">USER WEBS</div>
+              <h2>User Web + Router đang quản lý</h2>
             </div>
             <button id="refreshBtn" class="ghost">Refresh</button>
           </div>
