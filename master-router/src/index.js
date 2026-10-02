@@ -1560,6 +1560,24 @@ async function reportRouterTransportResult(env, request) {
   return { accepted: true, failed: true };
 }
 
+async function claimRoute(env, eventId, accountId, expectedStatus, nextStatus) {
+  const current = await env.DB.prepare(
+    "SELECT status,error FROM ingest_account_routes WHERE event_id=? AND account_id=?"
+  ).bind(eventId, accountId).first();
+  if (!current) throw Object.assign(new Error("ingest_route_not_found"), { status: 404 });
+  if (current.status === "posted") return { already_posted: true };
+  if (current.status !== expectedStatus) {
+    throw Object.assign(new Error("route_not_claimable:" + String(current.status || "unknown")), { status: 409, expose: true });
+  }
+  const result = await env.DB.prepare(
+    "UPDATE ingest_account_routes SET status=? WHERE event_id=? AND account_id=? AND status=?"
+  ).bind(nextStatus, eventId, accountId, expectedStatus).run();
+  if (!result?.meta?.changes) {
+    throw Object.assign(new Error("route_claim_race"), { status: 409, expose: true });
+  }
+  return { already_posted: false };
+}
+
 async function internalRouterHealth(env, request) {
   const slot = await verifyRouterCaller(env, request);
   return {
@@ -1582,10 +1600,18 @@ async function internalRouterProcess(env, request) {
     throw Object.assign(new Error("router_account_mismatch"), { status: 409 });
   }
 
+  const claim = await claimRoute(env, eventId, accountId, "router_pending", "processing");
+  if (claim.already_posted) return { posted: true, duplicate: true };
+
   const account = await env.DB.prepare(
     "SELECT * FROM x_accounts WHERE id=? AND child_id=? AND enabled=1"
   ).bind(slot.account_id, slot.child_id).first();
-  if (!account) throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
+  if (!account) {
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='failed',error='x_account_not_found_or_paused' WHERE event_id=? AND account_id=?"
+    ).bind(eventId, accountId).run().catch(() => {});
+    throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
+  }
 
   let secrets = {};
   if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
@@ -1606,10 +1632,18 @@ async function internalRouterPublish(env, request) {
     throw Object.assign(new Error("router_publish_payload_invalid"), { status: 400 });
   }
 
+  const claim = await claimRoute(env, eventId, accountId, "local_ai_pending", "publishing");
+  if (claim.already_posted) return { posted: true, duplicate: true };
+
   const account = await env.DB.prepare(
     "SELECT * FROM x_accounts WHERE id=? AND child_id=? AND enabled=1"
   ).bind(slot.account_id, slot.child_id).first();
-  if (!account) throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
+  if (!account) {
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='failed',error='x_account_not_found_or_paused' WHERE event_id=? AND account_id=?"
+    ).bind(eventId, accountId).run().catch(() => {});
+    throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
+  }
 
   let secrets = {};
   if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
