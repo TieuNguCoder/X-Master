@@ -38,6 +38,25 @@ function postLanguageLabel(value){
   const names={"en-US":"English (US)","en-GB":"English (UK)","vi-VN":"Tiếng Việt","ja-JP":"Japanese","ko-KR":"Korean","zh-CN":"Chinese (Simplified)","zh-TW":"Chinese (Traditional)","es-ES":"Spanish","pt-BR":"Portuguese (Brazil)","fr-FR":"French","de-DE":"German","id-ID":"Indonesian","th-TH":"Thai","ru-RU":"Russian","tr-TR":"Turkish","hi-IN":"Hindi","ar-SA":"Arabic"};
   return names[value]||value||"English (US)";
 }
+function formatNumber(value){
+  const n=Number(value||0);
+  if(!Number.isFinite(n))return "-";
+  if(Math.abs(n)>=1e9)return (n/1e9).toFixed(n>=1e10?1:2).replace(/\.0+$/,"")+"B";
+  if(Math.abs(n)>=1e6)return (n/1e6).toFixed(n>=1e7?1:2).replace(/\.0+$/,"")+"M";
+  if(Math.abs(n)>=1e3)return (n/1e3).toFixed(n>=1e4?1:2).replace(/\.0+$/,"")+"K";
+  return new Intl.NumberFormat("en-US",{maximumFractionDigits:2}).format(n);
+}
+function formatMoney(value,currency="USD"){
+  const n=Number(value||0);
+  if(!Number.isFinite(n))return "-";
+  try{return new Intl.NumberFormat("en-US",{style:"currency",currency:currency||"USD",minimumFractionDigits:2,maximumFractionDigits:4}).format(n);}
+  catch{return "$"+n.toFixed(4);}
+}
+function formatDate(value){
+  if(!value)return "-";
+  const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value);
+  return d.toLocaleDateString("vi-VN");
+}
 function renderChildren(){
   $("#childrenList").innerHTML=state.children.map((c)=>{
     const statusClass=c.status==="ready"?"":c.status==="paused"?"paused":"error";
@@ -85,8 +104,9 @@ $("#logoutBtn").onclick=async()=>{try{await api("/api/admin/logout",{method:"POS
 $("#refreshBtn").onclick=()=>refresh().catch((e)=>toast(e.message));
 $("#sourceRefreshBtn").onclick=()=>refresh().catch((e)=>toast(e.message));
 $("#auditRefreshBtn").onclick=loadAudit;
+$("#usageRefreshBtn").onclick=loadCloudflareUsage;
 
-document.querySelectorAll(".tab").forEach((tab)=>{tab.onclick=()=>{document.querySelectorAll(".tab").forEach((x)=>x.classList.toggle("active",x===tab));document.querySelectorAll(".tabpage").forEach((p)=>p.classList.add("hidden"));$("#tab-"+tab.dataset.tab).classList.remove("hidden");if(tab.dataset.tab==="audit")loadAudit();};});
+document.querySelectorAll(".tab").forEach((tab)=>{tab.onclick=()=>{document.querySelectorAll(".tab").forEach((x)=>x.classList.toggle("active",x===tab));document.querySelectorAll(".tabpage").forEach((p)=>p.classList.add("hidden"));$("#tab-"+tab.dataset.tab).classList.remove("hidden");if(tab.dataset.tab==="audit")loadAudit();if(tab.dataset.tab==="usage")loadCloudflareUsage();};});
 
 $("#preflightBtn").onclick=async()=>{$("#deployStatus").textContent="Đang test Master Cloudflare + Cloudinary...";$("#preflightBtn").disabled=true;try{const result=await api("/api/admin/children/preflight",{method:"POST",body:JSON.stringify(childPayload(false))});$("#deployStatus").textContent="API READY: "+result.checks.join(", ");}catch(error){$("#deployStatus").textContent="PRECHECK FAILED: "+error.message;}finally{$("#preflightBtn").disabled=false;}};
 $("#childForm").onsubmit=async(e)=>{e.preventDefault();const password=$("#childPassword").value;if(password.length<8)return toast("Password tối thiểu 8 ký tự.");$("#deployStatus").textContent="Đang validate → deploy User Web → tạo 5 Router → health check...";[...e.target.querySelectorAll("button")].forEach((b)=>b.disabled=true);try{const result=await api("/api/admin/children",{method:"POST",body:JSON.stringify(childPayload(true))});$("#deployStatus").textContent="READY: "+result.child.web_url;$("#shareText").value="Web: "+result.child.web_url+"\nPassword: "+password;$("#shareCard").classList.remove("hidden");$("#childPassword").value="";$("#cloudSecret").value="";await refresh();}catch(error){$("#deployStatus").textContent="DEPLOY FAILED (đã rollback): "+error.message;}finally{[...e.target.querySelectorAll("button")].forEach((b)=>b.disabled=false);}};
@@ -154,6 +174,55 @@ async function deleteChild(id){
     await refresh();
   }catch(error){toast("KHÔNG xóa dữ liệu: "+error.message);}
 }
+async function loadCloudflareUsage(){
+  $("#usageStatus").textContent="Đang đọc usage trực tiếp từ Cloudflare...";
+  $("#usagePermission").classList.add("hidden");
+  try{
+    const data=await api("/api/admin/cloudflare-usage");
+    const count=data.worker_count;
+    const limit=Number(data.worker_limit_reference||500);
+    $("#usageWorkers").textContent=(count==null?"-":formatNumber(count))+" / "+formatNumber(limit);
+    $("#usageWorkersHint").textContent=count==null?"Không đọc được danh sách Worker.":"Còn khoảng "+formatNumber(Math.max(0,limit-Number(count)))+" Worker theo mốc quản lý 500.";
+    $("#usageWorkersBar").style.width=count==null?"0%":Math.min(100,(Number(count)/Math.max(1,limit))*100).toFixed(1)+"%";
+    $("#usageAccount").textContent="Account "+(data.account_id_masked||"-");
+
+    const billing=data.billing||{};
+    $("#usagePeriod").textContent=billing.available?(formatDate(billing.period_start)+" → "+formatDate(billing.period_end)):"-";
+    $("#usageCost").textContent=billing.available?(billing.cost_available?formatMoney(billing.total_billed_cost,billing.currency||"USD"):"N/A"):"N/A";
+    $("#usageRecords").textContent=billing.available?formatNumber(billing.records||0):"-";
+    $("#usageSummary").classList.remove("hidden");
+
+    if(!billing.available){
+      $("#usageProductsWrap").classList.add("hidden");
+      $("#usageStatus").textContent="Worker usage đã tải. Billing usage chưa khả dụng.";
+      $("#usagePermission").classList.remove("hidden");
+      $("#usagePermission").textContent=billing.permission_required
+        ?"API Token hiện tại chưa có quyền Cloudflare Billing Read. Hãy thêm Account → Billing → Read cho token Master rồi bấm Refresh. Worker count vẫn hoạt động bình thường."
+        :"Cloudflare Billing API chưa trả dữ liệu: "+(billing.error||("HTTP "+(billing.status||"-")));
+      return;
+    }
+
+    $("#usagePermission").classList.add("hidden");
+    $("#usageStatus").textContent="Đã cập nhật từ Cloudflare. Usage-based cost không bao gồm phí cố định của subscription.";
+    const metrics=billing.metrics||[];
+    let currentProduct="";
+    const html=[];
+    for(const m of metrics){
+      if(m.product!==currentProduct){
+        currentProduct=m.product;
+        html.push('<div class="usage-product">'+esc(currentProduct)+'</div>');
+      }
+      html.push('<div class="usage-metric"><div class="metric-name"><strong>'+esc(m.metric_name||m.metric_id)+'</strong><small>'+esc(m.metric_id||"")+'</small></div><div class="metric-value"><strong>'+esc(formatNumber(m.quantity))+'</strong><br><small>'+esc(m.unit||"units")+'</small></div><div class="metric-value"><strong>'+(m.cost_available?esc(formatMoney(m.billed_cost,billing.currency||"USD")):"—")+'</strong><br><small>usage cost</small></div></div>');
+    }
+    $("#usageMetrics").innerHTML=html.join("")||'<div class="muted">Cloudflare chưa trả metric usage nào trong kỳ hiện tại.</div>';
+    $("#usageProductsWrap").classList.remove("hidden");
+  }catch(error){
+    $("#usageStatus").textContent="Cloudflare Usage lỗi: "+error.message;
+    $("#usageSummary").classList.add("hidden");
+    $("#usageProductsWrap").classList.add("hidden");
+  }
+}
+
 async function loadAudit(){
   try{
     const result=await api("/api/admin/audit");
