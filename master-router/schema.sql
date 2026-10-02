@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS child_infra (
   FOREIGN KEY(child_id) REFERENCES children(id) ON DELETE CASCADE
 );
 
+-- Durable trigger snapshots and a lease serialize pause/resume/delete.
+CREATE TABLE IF NOT EXISTS child_lifecycle (
+  child_id TEXT PRIMARY KEY,
+  operation_id TEXT,
+  action TEXT,
+  lease_expires_at TEXT,
+  snapshots_json TEXT NOT NULL DEFAULT '{}',
+  verified_status TEXT,
+  last_error TEXT,
+  FOREIGN KEY(child_id) REFERENCES children(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS child_sources (
   child_id TEXT NOT NULL,
   source_id TEXT NOT NULL,

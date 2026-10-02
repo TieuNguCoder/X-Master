@@ -32,6 +32,9 @@ jobs:
       - name: Provisioning regressions
         run: node test/provisioning-regression.test.mjs
 
+      - name: Cloudflare Worker lifecycle
+        run: node --test test/worker-lifecycle.test.mjs
+
       - name: Render and syntax-check Child Worker
         working-directory: .
         run: |
