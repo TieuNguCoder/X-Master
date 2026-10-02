@@ -1615,7 +1615,7 @@ async function completeLocalAiResult(env, request) {
 async function internalRouterHealth(env, request) {
   const slot = await verifyRouterCaller(env, request);
   return {
-    ok: slot.status === "ready" || slot.status === "assigned",
+    ok: ["provisioning","ready","assigned"].includes(slot.status),
     slot_id: slot.id,
     child_id: slot.child_id,
     slot_index: Number(slot.slot_index),
