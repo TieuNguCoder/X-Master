@@ -1510,8 +1510,16 @@ async function updateChild(env, request, admin, childId) {
   }
 
   if (body.status === "ready" || body.status === "paused") {
+    const action = body.status === "paused" ? "stop" : "resume";
+    const managedChild = await env.DB.prepare(
+      "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
+    ).bind(childId).first();
+    const cloudflare = await manageChildWorkers(env, managedChild, action);
     await env.DB.prepare("UPDATE children SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.status, childId).run();
-    await audit(env, "admin", admin.id, "child.status_changed", "child", childId, { status: body.status });
+    await audit(env, "admin", admin.id, body.status === "paused" ? "child.workers_stopped" : "child.workers_resumed", "child", childId, {
+      status: body.status,
+      cloudflare
+    });
   }
 
   return { child: await env.DB.prepare("SELECT id,name,slug,status,web_url,worker_name FROM children WHERE id=?").bind(childId).first() };
@@ -1561,7 +1569,15 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   const subdomain = await ensureWorkersSubdomain(infra);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
   const secretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
-  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...childInfra, child_secret: childSecret });
+  const legacyCloudflare = (
+    stored.cloudflare_account_id && stored.cloudflare_api_token
+      ? {
+          cloudflare_account_id: stored.cloudflare_account_id,
+          cloudflare_api_token: stored.cloudflare_api_token
+        }
+      : {}
+  );
+  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...childInfra, ...legacyCloudflare, child_secret: childSecret });
 
   await env.DB.batch([
     env.DB.prepare(
@@ -1590,20 +1606,27 @@ async function deleteChild(env, admin, childId) {
   ).bind(childId).first();
   if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
 
-  const infra = masterCloudflareInfra(env);
-  const slots = await listRouterSlots(env, childId);
-  for (const slot of slots) {
-    if (slot.worker_name) await deleteChildWorker(infra, slot.worker_name, true);
-  }
-  if (child.worker_name) await deleteChildWorker(infra, child.worker_name);
+  const cloudflare = await manageChildWorkers(env, child, "delete");
 
-  await audit(env, "admin", admin.id, "child.deleted", "child", childId, {
+  await audit(env, "admin", admin.id, "child.workers_deleted_verified", "child", childId, {
     name: child.name,
     worker_name: child.worker_name,
-    router_workers_deleted: slots.length
+    cloudflare
   });
+
   await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run();
-  return { deleted: true };
+
+  await audit(env, "admin", admin.id, "child.data_deleted", "child", childId, {
+    name: child.name,
+    worker_name: child.worker_name,
+    cloudflare_verified: true
+  }).catch(() => {});
+
+  return {
+    deleted: true,
+    cloudflare_verified: true,
+    workers: cloudflare.results
+  };
 }
 
 async function loadAccountSecrets(env, accountId) {
