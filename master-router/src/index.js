@@ -904,9 +904,13 @@ async function accountSources(env, accountId) {
 
 async function listXAccounts(env, childId) {
   const result = await env.DB.prepare(
-    `SELECT id,child_id,display_name,x_handle,encrypted_json,buffer_channel_id,buffer_channel_name,
-            content_mode,x_premium,enabled,created_at,updated_at
-     FROM x_accounts WHERE child_id=? ORDER BY created_at,id`
+    `SELECT a.id,a.child_id,a.display_name,a.x_handle,a.encrypted_json,a.buffer_channel_id,a.buffer_channel_name,
+            a.content_mode,a.x_premium,a.enabled,a.created_at,a.updated_at,
+            rs.id AS router_slot_id,rs.slot_index AS router_slot_index,rs.worker_name AS router_worker_name,
+            rs.web_url AS router_url,rs.status AS router_status
+       FROM x_accounts a
+       LEFT JOIN child_router_slots rs ON rs.account_id=a.id
+      WHERE a.child_id=? ORDER BY COALESCE(rs.slot_index,99),a.created_at,a.id`
   ).bind(childId).all();
 
   const accounts = [];
@@ -950,6 +954,11 @@ async function listXAccounts(env, childId) {
       deepseek_configured: deepseekConfigured,
       buffer_configured: bufferConfigured,
       settings_corrupt: settingsCorrupt,
+      router_slot_id: row.router_slot_id || null,
+      router_slot_index: row.router_slot_index == null ? null : Number(row.router_slot_index),
+      router_worker_name: row.router_worker_name || null,
+      router_url: row.router_url || null,
+      router_status: row.router_status || "missing",
       last_post_status: lastRoute?.status || null,
       last_post_error: lastRoute?.error || null,
       last_post_at: lastRoute?.created_at || null,
@@ -974,7 +983,7 @@ async function listChildren(env) {
 
   const children = [];
   for (const child of (result.results || [])) {
-    children.push({ ...child, accounts: await listXAccounts(env, child.id) });
+    children.push({ ...child, router_slots: await listRouterSlots(env, child.id), accounts: await listXAccounts(env, child.id) });
   }
   return children;
 }
@@ -1007,8 +1016,9 @@ async function childMe(env, child) {
   return {
     child: { id: child.id, name: child.name, status: child.status },
     source_catalog: await listSources(env),
+    router_slots: await listRouterSlots(env, child.id),
     accounts: await listXAccounts(env, child.id),
-    limits: { max_accounts: 5 }
+    limits: { max_accounts: 5, router_slots: 5 }
   };
 }
 
@@ -1037,6 +1047,13 @@ async function saveXAccount(env, child, body, accountId = null) {
     if (Number(count?.n || 0) >= 5) {
       throw Object.assign(new Error("x_account_limit_reached"), { status: 409 });
     }
+    const freeSlot = await env.DB.prepare(
+      "SELECT id FROM child_router_slots WHERE child_id=? AND account_id IS NULL AND status='ready' ORDER BY slot_index LIMIT 1"
+    ).bind(child.id).first();
+    if (!freeSlot) {
+      throw Object.assign(new Error("router_slot_unavailable"), { status: 409 });
+    }
+    body.__router_slot_id = freeSlot.id;
   }
 
   let secrets = {};
@@ -1083,6 +1100,15 @@ async function saveXAccount(env, child, body, accountId = null) {
       finalId,child.id,displayName,xHandle,encrypted,bufferChannelId,bufferChannelName,
       mode,premium,enabled
     ).run();
+
+    const slotId = String(body.__router_slot_id || "");
+    const assigned = await env.DB.prepare(
+      "UPDATE child_router_slots SET account_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=? AND child_id=? AND account_id IS NULL AND status='ready'"
+    ).bind(finalId, slotId, child.id).run();
+    if (!assigned?.meta?.changes) {
+      await env.DB.prepare("DELETE FROM x_accounts WHERE id=?").bind(finalId).run().catch(() => {});
+      throw Object.assign(new Error("router_slot_assignment_failed"), { status: 409 });
+    }
   }
 
   for (const sourceId of sourceIds) {
@@ -1134,6 +1160,9 @@ async function deleteXAccount(env, child, accountId) {
     "SELECT id,display_name FROM x_accounts WHERE id=? AND child_id=?"
   ).bind(accountId, child.id).first();
   if (!account) throw Object.assign(new Error("x_account_not_found"), { status: 404 });
+  await env.DB.prepare(
+    "UPDATE child_router_slots SET account_id=NULL,status='ready',updated_at=CURRENT_TIMESTAMP WHERE child_id=? AND account_id=?"
+  ).bind(child.id, accountId).run();
   await env.DB.prepare("DELETE FROM x_accounts WHERE id=? AND child_id=?").bind(accountId, child.id).run();
   await audit(env, "child", child.id, "x_account.deleted", "x_account", accountId, { display_name: account.display_name });
   return { deleted: true };
