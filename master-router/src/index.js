@@ -760,7 +760,10 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
            ) VALUES(?,?,?,?,?,?,?)`
         ).bind(slotId, child.id, slotIndex, accountRouterWorkerName(child, slotIndex), routerSecretHash, encryptedJson, "provisioning").run();
       } else {
-        const stored = await decryptJson(env.MASTER_KEY, current.encrypted_json);
+        const secretRow = await env.DB.prepare(
+          "SELECT encrypted_json FROM child_router_slots WHERE id=?"
+        ).bind(slotId).first();
+        const stored = await decryptJson(env.MASTER_KEY, secretRow?.encrypted_json);
         routerSecret = String(stored.router_secret || "");
         if (!routerSecret) throw Object.assign(new Error("router_secret_missing"), { status: 500 });
       }
