@@ -35,6 +35,17 @@ X-Master.exe
 
 The five account routers and the User Web are created under the **same Cloudflare account as Master**. Users never receive or enter Cloudflare credentials.
 
+## v0.3.2 Cloudflare Usage dashboard
+
+- Master Web now has a **Cloudflare Usage** tab.
+- Shows the number of Worker scripts currently present in the Master Cloudflare account and a visual reference against the configured 500-Worker management target.
+- Reads the current account billable-usage period directly from Cloudflare.
+- Shows usage-based billed cost when Cloudflare exposes cost fields.
+- Groups consumption by Cloudflare product and billable metric, including Workers, D1, and any other usage returned by the account.
+- Uses the same central Cloudflare Account ID/API Token already stored by Master; no extra credentials are entered in the web UI.
+- If the token lacks **Account → Billing → Read**, Worker count remains visible and the UI displays a clear permission message instead of failing the page.
+- Cloudflare's fixed subscription fee is intentionally not mixed into the usage-based cost number.
+
 ## v0.3.1 Verified Worker lifecycle
 
 - **Stop Workers** is no longer a database-only pause: Master disables the real `workers.dev` subdomain for the User Web and each existing account-router Worker, verifies the disabled state, and only then records the User as paused.
