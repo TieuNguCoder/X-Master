@@ -2136,12 +2136,13 @@ async function internalRouterProcess(env, request) {
     throw Object.assign(new Error("x_account_not_found_or_paused"), { status: 404 });
   }
 
-  let secrets = {};
-  if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
-  if (accountAiProvider(secrets) === "gemini_free") {
-    throw Object.assign(new Error("gemini_free_requires_collector"), { status: 409 });
-  }
-  return processAccountRoute(env, eventId, account, String(body.text || ""));
+  return processAccountRoute(
+    env,
+    eventId,
+    account,
+    String(body.text || ""),
+    Array.isArray(body.assets) ? body.assets : []
+  );
 }
 
 async function internalRouterPublish(env, request) {
@@ -2290,6 +2291,13 @@ async function ingestEvent(env, request, ctx) {
   const uniqueChildren = [...new Set(routed.map((x) => x.child_id))];
   const externalId = String(body.external_id || "").trim() || null;
   const eventId = id("evt");
+  const incomingMedia = Array.isArray(body.media) ? body.media.slice(0, 4) : [];
+  const storedMedia = incomingMedia.map((item) => ({
+    kind: String(item?.kind || ""),
+    mime_type: String(item?.mime_type || ""),
+    filename: String(item?.filename || ""),
+    bytes: Number(item?.bytes || 0)
+  }));
 
   try {
     await env.DB.prepare(
@@ -2300,7 +2308,7 @@ async function ingestEvent(env, request, ctx) {
       matched.id,
       externalId,
       String(body.text || "").slice(0, 20000),
-      JSON.stringify(Array.isArray(body.media) ? body.media : []),
+      JSON.stringify(storedMedia),
       JSON.stringify(uniqueChildren),
       "accepted"
     ).run();
@@ -2311,19 +2319,35 @@ async function ingestEvent(env, request, ctx) {
     throw error;
   }
 
+  const assetsByChild = new Map();
+  const mediaErrors = new Map();
+  if (incomingMedia.some((item) => item?.kind === "image" && item?.data_base64)) {
+    for (const childId of uniqueChildren) {
+      try {
+        const assets = await uploadChildImages(env, childId, incomingMedia);
+        assetsByChild.set(childId, assets);
+        await audit(env, "system", "media", "media.cloudinary_uploaded", "child", childId, {
+          event_id: eventId,
+          asset_count: assets.length
+        });
+      } catch (error) {
+        const detail = safeError(error);
+        mediaErrors.set(childId, detail);
+        await audit(env, "system", "media", "media.cloudinary_failed", "child", childId, {
+          event_id: eventId,
+          error: detail
+        }).catch(() => {});
+      }
+    }
+  }
+
   const routerJobs = [];
-  const localAiJobs = [];
   const sourceText = String(body.text || "");
 
   for (const account of routed) {
-    let secrets = {};
-    if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
-    const provider = accountAiProvider(secrets);
-    const initialStatus = provider === "gemini_free" ? "local_ai_pending" : "router_pending";
-
     await env.DB.prepare(
       "INSERT OR IGNORE INTO ingest_account_routes(event_id,account_id,status) VALUES(?,?,?)"
-    ).bind(eventId, account.id, initialStatus).run();
+    ).bind(eventId, account.id, "router_pending").run();
 
     if (!account.router_slot_id || !account.router_url || account.router_status !== "assigned") {
       const detail = "router_slot_missing_or_not_assigned";
@@ -2339,54 +2363,33 @@ async function ingestEvent(env, request, ctx) {
       continue;
     }
 
-    if (provider === "gemini_free" && !secrets.gemini_api_key) {
-      const detail = "gemini_free:gemini_api_key_missing";
+    if (mediaErrors.has(account.child_id)) {
+      const detail = "media:" + mediaErrors.get(account.child_id);
       await env.DB.prepare(
         "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
-      ).bind(detail, eventId, account.id).run();
-      await audit(env, "system", "router", "x_account.post_failed", "x_account", account.id, {
+      ).bind(detail.slice(0, 1500), eventId, account.id).run();
+      await audit(env, "system", "media", "x_account.post_failed", "x_account", account.id, {
         event_id: eventId,
         child_id: account.child_id,
-        ai_provider: provider,
         error: detail
       });
       continue;
     }
 
-    const action = provider === "gemini_free" ? "publish" : "process";
-    const dispatch = await makeRouterDispatch(env, account, action, eventId);
-
-    if (provider === "gemini_free") {
-      localAiJobs.push({
-        event_id: eventId,
-        account_id: account.id,
-        display_name: account.display_name,
-        api_key: secrets.gemini_api_key,
-        model: "gemini-3.1-flash-lite",
-        text: sourceText,
-        content_mode: account.content_mode || "news",
-        x_premium: Boolean(account.x_premium),
-        post_language: accountPostLanguage(secrets),
-        router_url: dispatch.router_url,
-        router_slot_id: dispatch.router_slot_id,
-        router_issued_at: dispatch.issued_at,
-        router_signature: dispatch.signature
-      });
-    } else {
-      routerJobs.push({
-        event_id: eventId,
-        account_id: account.id,
-        display_name: account.display_name,
-        ai_provider: provider,
-        text: sourceText,
-        router_url: dispatch.router_url,
-        router_slot_id: dispatch.router_slot_id,
-        router_issued_at: dispatch.issued_at,
-        router_signature: dispatch.signature
-      });
-    }
+    const dispatch = await makeRouterDispatch(env, account, "process", eventId);
+    routerJobs.push({
+      event_id: eventId,
+      account_id: account.id,
+      display_name: account.display_name,
+      ai_provider: "deepseek_paid",
+      text: sourceText,
+      assets: assetsByChild.get(account.child_id) || [],
+      router_url: dispatch.router_url,
+      router_slot_id: dispatch.router_slot_id,
+      router_issued_at: dispatch.issued_at,
+      router_signature: dispatch.signature
+    });
   }
-
   await audit(env, "collector", "local", "ingest.accepted", "source", matched.id, {
     event_id: eventId,
     routed_accounts: routed.length,
@@ -2400,7 +2403,8 @@ async function ingestEvent(env, request, ctx) {
     source: matched,
     routed_children: uniqueChildren.length,
     router_jobs: routerJobs,
-    local_ai_jobs: localAiJobs,
+    local_ai_jobs: [],
+    media_count: incomingMedia.length,
     routed_accounts: routed.map((x) => ({
       id: x.id,
       display_name: x.display_name,
