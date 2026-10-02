@@ -2096,6 +2096,8 @@ async function handleApi(request, env, ctx) {
 export const __test = {
   ensureWorkersSubdomain,
   deployChildWorker,
+  accountRouterWorkerName,
+  deployAccountRouterWorker,
   rewritePrompt,
   cleanAiOutput,
   geminiRewrite,
