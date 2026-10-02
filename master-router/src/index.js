@@ -1215,6 +1215,7 @@ async function accountSources(env, accountId) {
 }
 
 async function listXAccounts(env, childId) {
+  const globalAi = await childAiSettings(env, childId);
   const result = await env.DB.prepare(
     `SELECT a.id,a.child_id,a.display_name,a.x_handle,a.encrypted_json,a.buffer_channel_id,a.buffer_channel_name,
             a.content_mode,a.x_premium,a.enabled,a.created_at,a.updated_at,
@@ -1227,20 +1228,18 @@ async function listXAccounts(env, childId) {
 
   const accounts = [];
   for (const row of (result.results || [])) {
-    let geminiConfigured = false;
-    let deepseekConfigured = false;
     let bufferConfigured = false;
-    let aiProvider = "gemini_paid";
     let postLanguage = "en-US";
+    let contentMode = row.content_mode || "news";
     let settingsCorrupt = false;
     if (row.encrypted_json) {
       try {
         const secrets = await decryptJson(env.MASTER_KEY, row.encrypted_json);
-        geminiConfigured = Boolean(secrets.gemini_api_key);
-        deepseekConfigured = Boolean(secrets.deepseek_api_key);
         bufferConfigured = Boolean(secrets.buffer_api_key);
-        aiProvider = accountAiProvider(secrets);
         postLanguage = accountPostLanguage(secrets);
+        if (["news","airdrop","both"].includes(String(secrets.content_mode || ""))) {
+          contentMode = String(secrets.content_mode);
+        }
       } catch {
         settingsCorrupt = true;
       }
@@ -1256,14 +1255,14 @@ async function listXAccounts(env, childId) {
       x_handle: row.x_handle || null,
       buffer_channel_id: row.buffer_channel_id || null,
       buffer_channel_name: row.buffer_channel_name || null,
-      content_mode: row.content_mode || "news",
+      content_mode: contentMode,
       x_premium: Boolean(row.x_premium),
       enabled: Boolean(row.enabled),
-      ai_provider: aiProvider,
+      ai_provider: "deepseek_paid",
       post_language: postLanguage,
-      ai_configured: aiProvider === "deepseek_paid" ? deepseekConfigured : geminiConfigured,
-      gemini_configured: geminiConfigured,
-      deepseek_configured: deepseekConfigured,
+      ai_configured: globalAi.deepseek_configured,
+      gemini_configured: false,
+      deepseek_configured: globalAi.deepseek_configured,
       buffer_configured: bufferConfigured,
       settings_corrupt: settingsCorrupt,
       router_slot_id: row.router_slot_id || null,
@@ -1388,16 +1387,18 @@ async function childMe(env, child) {
 }
 
 async function saveXAccount(env, child, body, accountId = null) {
-  const displayName = String(body.display_name || "").trim();
+  const bufferChannelNameRaw = String(body.buffer_channel_name || "").trim();
+  const displayName = String(body.display_name || bufferChannelNameRaw || "").trim();
   const xHandle = String(body.x_handle || "").trim().replace(/^@/, "") || null;
   if (displayName.length < 2) throw Object.assign(new Error("account_name_required"), { status: 400 });
 
   const sourceIds = await validateSourceIds(env, body.source_ids);
-  const mode = body.content_mode === "airdrop" ? "airdrop" : "news";
+  const requestedMode = ["news","airdrop","both"].includes(String(body.content_mode || "")) ? String(body.content_mode) : "both";
+  const mode = requestedMode === "both" ? "news" : requestedMode;
   const premium = body.x_premium ? 1 : 0;
   const enabled = body.enabled === false ? 0 : 1;
   const bufferChannelId = String(body.buffer_channel_id || "").trim() || null;
-  const bufferChannelName = String(body.buffer_channel_name || "").trim() || null;
+  const bufferChannelName = bufferChannelNameRaw || null;
 
   let existing = null;
   if (accountId) {
@@ -1429,18 +1430,16 @@ async function saveXAccount(env, child, body, accountId = null) {
       throw Object.assign(new Error("account_settings_decrypt_failed"), { status: 500 });
     }
   }
-  const providerRaw = String(body.ai_provider || secrets.ai_provider || "gemini_paid");
-  const aiProvider = ["gemini_free", "gemini_paid", "deepseek_paid"].includes(providerRaw) ? providerRaw : "gemini_paid";
-  const aiKey = String(body.ai_api_key || body.gemini_api_key || "").trim();
   const buffer = String(body.buffer_api_key || "").trim();
-  secrets.ai_provider = aiProvider;
   const requestedLanguage = String(body.post_language || secrets.post_language || "en-US").trim().slice(0, 80) || "en-US";
   secrets.post_language = requestedLanguage;
-  if (aiKey) {
-    if (aiProvider === "deepseek_paid") secrets.deepseek_api_key = aiKey;
-    else secrets.gemini_api_key = aiKey;
-  }
+  secrets.content_mode = requestedMode;
+  delete secrets.ai_provider;
+  delete secrets.deepseek_api_key;
+  delete secrets.gemini_api_key;
   if (buffer) secrets.buffer_api_key = buffer;
+  if (!existing && !secrets.buffer_api_key) throw Object.assign(new Error("buffer_api_key_required"), { status: 400 });
+  if (!bufferChannelId) throw Object.assign(new Error("buffer_channel_id_required"), { status: 400 });
   const encrypted = Object.keys(secrets).length ? await encryptJson(env.MASTER_KEY, secrets) : null;
 
   const finalId = accountId || id("xa");
@@ -1499,12 +1498,12 @@ async function saveXAccount(env, child, body, accountId = null) {
     display_name: displayName,
     x_handle: xHandle,
     source_count: sourceIds.length,
-    ai_provider: aiProvider,
+    ai_provider: "deepseek_paid",
     post_language: requestedLanguage,
-    ai_updated: Boolean(aiKey),
+    ai_updated: false,
     buffer_updated: Boolean(buffer),
     buffer_channel_id: bufferChannelId,
-    content_mode: mode,
+    content_mode: requestedMode,
     x_premium: Boolean(premium),
     enabled: Boolean(enabled)
   });
