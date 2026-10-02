@@ -37,6 +37,7 @@ jobs:
         run: |
           node tools/render-child-worker.mjs
           node --check .tmp-child-worker.mjs
+          node --check .tmp-account-router.mjs
 
       - name: Wrangler dry run
         run: |
@@ -53,6 +54,8 @@ jobs:
           SESSION_PEPPER="smoke-session-pepper"
           ADMIN_PASSWORD_HASH="$HASH"
           COLLECTOR_SECRET="collector-smoke-secret"
+          CF_ACCOUNT_ID="account-smoke-123456"
+          CF_API_TOKEN="token-smoke-12345678901234567890"
           EOF
 
           npx wrangler d1 execute x-master --local --file schema.sql --config wrangler.jsonc
