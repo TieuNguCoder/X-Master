@@ -851,6 +851,24 @@ async function ensureChildRouterSlots(env, child, masterRoot) {
     throw error;
   }
 
+  const unboundAccounts = await env.DB.prepare(
+    `SELECT a.id FROM x_accounts a
+       LEFT JOIN child_router_slots rs ON rs.account_id=a.id
+      WHERE a.child_id=? AND rs.id IS NULL
+      ORDER BY a.created_at,a.id`
+  ).bind(child.id).all();
+  const freeSlots = await env.DB.prepare(
+    "SELECT id FROM child_router_slots WHERE child_id=? AND account_id IS NULL AND status='ready' ORDER BY slot_index"
+  ).bind(child.id).all();
+
+  const pendingAccounts = unboundAccounts.results || [];
+  const availableSlots = freeSlots.results || [];
+  for (let i = 0; i < Math.min(pendingAccounts.length, availableSlots.length); i++) {
+    await env.DB.prepare(
+      "UPDATE child_router_slots SET account_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=? AND account_id IS NULL"
+    ).bind(pendingAccounts[i].id, availableSlots[i].id).run();
+  }
+
   return listRouterSlots(env, child.id);
 }
 
@@ -1137,6 +1155,19 @@ async function saveXAccount(env, child, body, accountId = null) {
     await env.DB.prepare(
       "INSERT INTO x_account_sources(account_id,source_id) VALUES(?,?)"
     ).bind(finalId, sourceId).run();
+  }
+
+  const currentSlot = await env.DB.prepare(
+    "SELECT id FROM child_router_slots WHERE child_id=? AND account_id=? LIMIT 1"
+  ).bind(child.id, finalId).first();
+  if (!currentSlot) {
+    const freeSlot = await env.DB.prepare(
+      "SELECT id FROM child_router_slots WHERE child_id=? AND account_id IS NULL AND status='ready' ORDER BY slot_index LIMIT 1"
+    ).bind(child.id).first();
+    if (!freeSlot) throw Object.assign(new Error("router_slot_unavailable"), { status: 409 });
+    await env.DB.prepare(
+      "UPDATE child_router_slots SET account_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=?"
+    ).bind(finalId, freeSlot.id).run();
   }
 
   await audit(env, "child", child.id, existing ? "x_account.updated" : "x_account.created", "x_account", finalId, {
