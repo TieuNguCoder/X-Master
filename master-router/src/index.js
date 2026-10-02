@@ -748,7 +748,8 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
       { type: "plain_text", name: "ROUTER_SLOT_ID", text: slotId },
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
-      { type: "secret_text", name: "ROUTER_SECRET", text: routerSecret }
+      { type: "secret_text", name: "ROUTER_SECRET", text: routerSecret },
+      { type: "service", name: "MASTER", service: "x-master-router", environment: "production" }
     ]
   };
 
@@ -908,38 +909,38 @@ async function routerCallSecret(env, slot) {
 
 async function accountRouterAssignment(env, accountId) {
   return env.DB.prepare(
-    `SELECT id AS router_slot_id,web_url AS router_url,status AS router_status
+    `SELECT id AS router_slot_id,web_url AS router_url,status AS router_status,encrypted_json
        FROM child_router_slots WHERE account_id=? LIMIT 1`
   ).bind(accountId).first();
 }
 
-async function invokeAccountRouter(env, account, path, body) {
+async function makeRouterDispatch(env, account, action, eventId) {
   if (!account.router_slot_id || !account.router_url) {
     throw Object.assign(new Error("router_slot_missing"), { status: 409 });
   }
   if (account.router_status !== "assigned" && account.router_status !== "ready") {
     throw Object.assign(new Error("router_slot_not_ready"), { status: 409 });
   }
-  const slot = await env.DB.prepare(
-    "SELECT id,encrypted_json FROM child_router_slots WHERE id=?"
-  ).bind(account.router_slot_id).first();
+  const slot = account.router_encrypted_json
+    ? { encrypted_json: account.router_encrypted_json }
+    : await env.DB.prepare(
+        "SELECT encrypted_json FROM child_router_slots WHERE id=?"
+      ).bind(account.router_slot_id).first();
   const secret = await routerCallSecret(env, slot);
-  const response = await fetch(account.router_url + path, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-master-router-secret": secret
-    },
-    body: JSON.stringify(body)
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw Object.assign(new Error(payload.error || ("router_http_" + response.status)), {
-      status: response.status >= 400 && response.status < 600 ? response.status : 502,
-      expose: true
-    });
-  }
-  return payload;
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const material = [
+    account.router_slot_id,
+    String(eventId),
+    String(account.id),
+    String(action),
+    String(issuedAt)
+  ].join("|");
+  return {
+    router_url: account.router_url,
+    router_slot_id: account.router_slot_id,
+    issued_at: issuedAt,
+    signature: await hmacHex(secret, material)
+  };
 }
 
 async function listSources(env) {
