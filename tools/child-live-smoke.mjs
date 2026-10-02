@@ -38,7 +38,9 @@ body = await r.json();
 assert.equal(body.child.name, "Tester Smoke");
 assert.equal(body.source_catalog.length, 2);
 assert.equal(body.accounts.length, 0);
+assert.equal(body.router_slots.length, 5);
 assert.equal(body.limits.max_accounts, 5);
+assert.equal(body.limits.router_slots, 5);
 
 r = await fetch(root + "/api/buffer/channels", {
   method: "POST",
@@ -73,6 +75,8 @@ assert.equal(body.account.display_name, "Holly");
 assert.equal(body.account.ai_provider, "gemini_free");
 assert.equal(body.account.ai_configured, true);
 assert.equal(body.account.post_language, "en-US");
+assert.equal(body.account.router_slot_index, 1);
+assert.equal(body.account.router_status, "assigned");
 assert.equal(body.account.sources.length, 1);
 
 const createdAccountId = body.account.id;
@@ -124,5 +128,10 @@ r = await fetch(root + "/api/accounts/" + body.accounts[0].id, {
 assert.equal(r.status, 200);
 body = await r.json();
 assert.equal(body.deleted, true);
+
+r = await fetch(root + "/api/me", { headers: { cookie } });
+body = await r.json();
+assert.equal(body.accounts.length, 0);
+assert.equal(body.router_slots.filter((x) => x.status === "ready").length, 5);
 
 console.log("child-live-smoke: PASS");
