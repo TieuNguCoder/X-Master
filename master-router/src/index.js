@@ -528,7 +528,12 @@ async function bufferXChannels(apiKey) {
         name
         displayName
         service
+        serviceId
+        externalLink
+        avatar
         isQueuePaused
+        isDisconnected
+        isLocked
       }
     }`);
     for (const channel of (channelData.channels || [])) {
@@ -539,9 +544,23 @@ async function bufferXChannels(apiKey) {
           name: channel.name || channel.displayName || channel.id,
           display_name: channel.displayName || channel.name || null,
           service: channel.service,
+          service_id: channel.serviceId || null,
+          external_link: channel.externalLink || null,
+          avatar: channel.avatar || null,
+          x_handle: (() => {
+            try {
+              const u = new URL(String(channel.externalLink || ""));
+              const part = u.pathname.split("/").filter(Boolean).pop();
+              return String(part || channel.name || "").replace(/^@/, "") || null;
+            } catch {
+              return String(channel.name || "").replace(/^@/, "") || null;
+            }
+          })(),
           organization_id: org.id,
           organization_name: org.name || null,
-          queue_paused: Boolean(channel.isQueuePaused)
+          queue_paused: Boolean(channel.isQueuePaused),
+          disconnected: Boolean(channel.isDisconnected),
+          locked: Boolean(channel.isLocked)
         });
       }
     }
@@ -592,7 +611,7 @@ function rewritePrompt(text, account) {
   if (!sourceText) throw Object.assign(new Error("empty_source_text"), { status: 400 });
 
   const premium = Boolean(account.x_premium);
-  const mode = account.content_mode === "airdrop" ? "airdrop" : "news";
+  const mode = account.content_mode === "airdrop" ? "airdrop" : account.content_mode === "both" ? "both" : "news";
   const maxChars = premium ? 1600 : 275;
   const urls = extractSourceUrls(sourceText);
   const language = languageInstruction(account.post_language || "en-US");
@@ -640,6 +659,20 @@ function rewritePrompt(text, account) {
       "7) Final line: 2 to 4 relevant hashtags.",
       "Use spacing and emojis to improve readability, but keep it professional rather than spammy."
     ];
+  } else if (mode === "both") {
+    formatRules = premium ? [
+      "CONTENT MODE: AUTO — AIRDROP OR NEWS — PREMIUM/BLUE X ACCOUNT.",
+      "First classify SOURCE as AIRDROP/OPPORTUNITY or NEWS using only the source facts.",
+      "If AIRDROP/OPPORTUNITY: use a polished opportunity layout with headline, reward/eligibility/deadline only when explicitly present, visible link, 2 to 5 clear steps when applicable, a short CTA, and 2 to 4 relevant hashtags.",
+      "If NEWS: use a polished mini news brief with factual headline, concise summary, useful supported context/why-it-matters, important URL, and 2 to 4 relevant hashtags.",
+      "Do not mention the classification. Return only the finished post."
+    ] : [
+      "CONTENT MODE: AUTO — AIRDROP OR NEWS — STANDARD X ACCOUNT.",
+      "First classify SOURCE as AIRDROP/OPPORTUNITY or NEWS using only the source facts.",
+      "If AIRDROP/OPPORTUNITY: use a compact scan-friendly layout with emoji hook, reward only if explicitly stated, visible link, 1 to 3 short action steps when applicable, and 2 to 4 relevant hashtags.",
+      "If NEWS: use a short headline/hook, 1 to 2 useful factual sentences, important URL, and 2 to 4 relevant hashtags.",
+      "Do not mention the classification. Return only the finished post."
+    ];
   } else if (mode === "news" && !premium) {
     formatRules = [
       "CONTENT MODE: NEWS — STANDARD X ACCOUNT.",
@@ -684,7 +717,9 @@ function fallbackHashtags(sourceText, account) {
   }
 
   const lower = String(sourceText || "").toLowerCase();
-  const candidates = account.content_mode === "airdrop"
+  const likelyAirdrop = account.content_mode === "airdrop" ||
+    (account.content_mode === "both" && /airdrop|waitlist|reward|claim|quest|task|whitelist|presale|giveaway/i.test(lower));
+  const candidates = likelyAirdrop
     ? ["#Airdrop", "#Web3"]
     : [
         ...(lower.includes("bitcoin") || /\bbtc\b/.test(lower) ? ["#Bitcoin"] : []),
