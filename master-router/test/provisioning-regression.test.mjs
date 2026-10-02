@@ -246,6 +246,19 @@ try {
   assert.ok(airdropPrompt.prompt.includes("Final line: 2 to 4 hashtags."));
   assert.ok(airdropPrompt.prompt.includes("https://qyrolabs.space"));
 
+  const bothPrompt = __test.rewritePrompt(
+    "Project waitlist is live with XP rewards and tasks.",
+    { content_mode: "both", x_premium: 0, post_language: "en-US" }
+  );
+  assert.ok(bothPrompt.prompt.includes("CONTENT MODE: AUTO — AIRDROP OR NEWS — STANDARD X ACCOUNT."));
+  assert.ok(bothPrompt.prompt.includes("First classify SOURCE as AIRDROP/OPPORTUNITY or NEWS"));
+
+  const weighted = __test.fitStandardX(
+    "速報".repeat(180) + " https://example.com/path " + "#News #Update",
+    270
+  );
+  assert.ok(__test.xWeightedLength(weighted) <= 270, "standard X post must stay under weighted safety limit");
+
   const premiumNewsPrompt = __test.rewritePrompt(
     "Bitcoin market update with additional context.",
     { content_mode: "news", x_premium: 1, post_language: "vi-VN" }
@@ -324,8 +337,19 @@ try {
   );
   assert.equal(post.id, "post-smoke");
   assert.equal(post.status, "sent");
-  assert.equal(postingCalls.length, 3);
-  console.log("Gemini + DeepSeek rewrite + Buffer shareNow posting: PASS");
+
+  const mediaPost = await __test.bufferCreateNow(
+    "buffer-test-key",
+    "buffer-channel-smoke",
+    "Image smoke post",
+    [{ kind: "image", url: "https://res.cloudinary.com/demo/image/upload/sample.jpg" }]
+  );
+  assert.equal(mediaPost.id, "post-smoke");
+  const mediaQuery = JSON.parse(postingCalls.at(-1).init.body).query;
+  assert.ok(mediaQuery.includes("assets: ["));
+  assert.ok(mediaQuery.includes('image: { url: "https://res.cloudinary.com/demo/image/upload/sample.jpg" }'));
+  assert.equal(postingCalls.length, 4);
+  console.log("DeepSeek rewrite + weighted X limit + Buffer image shareNow posting: PASS");
 } finally {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;
