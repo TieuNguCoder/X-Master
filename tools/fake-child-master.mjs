@@ -6,6 +6,7 @@ const sourceCatalog = [
   { id: "src_second", title: "Second Source", username: "second_source", channel_id: "-100456" }
 ];
 let accounts = [];
+let aiSettings = { provider: "deepseek_paid", deepseek_configured: false };
 const routerSlots = Array.from({ length: 5 }, (_, i) => ({
   id: "rs_" + (i + 1),
   child_id: "ch_smoke",
@@ -65,11 +66,24 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/internal/child/me" && req.method === "GET") {
     return json(res, {
       child: { id: "ch_smoke", name: "Tester Smoke", status: "ready" },
+      ai_settings: aiSettings,
       source_catalog: sourceCatalog,
       router_slots: routerSlots.map((r) => ({ ...r, assigned: Boolean(r.account_id) })),
       accounts,
       limits: { max_accounts: 5, router_slots: 5 }
     });
+  }
+
+  if (req.url === "/internal/child/settings/ai" && req.method === "POST") {
+    const body = JSON.parse(raw || "{}");
+    if (!String(body.deepseek_api_key || "").trim()) return json(res, { error: "deepseek_api_key_required" }, 400);
+    aiSettings = { provider: "deepseek_paid", deepseek_configured: true };
+    return json(res, aiSettings);
+  }
+
+  if (req.url === "/internal/child/settings/ai/test" && req.method === "POST") {
+    if (!aiSettings.deepseek_configured) return json(res, { error: "deepseek_api_key_missing" }, 400);
+    return json(res, { ok: true, provider: "deepseek_paid", output: "DeepSeek smoke OK" });
   }
 
   if (req.url === "/internal/child/buffer/channels" && req.method === "POST") {
@@ -79,8 +93,14 @@ const server = http.createServer(async (req, res) => {
       channels: [{
         id: "buffer-channel-1",
         name: "Holly on X",
-        display_name: "Holly on X",
+        display_name: "Holly Display",
         service: "twitter",
+        service_id: "x-service-holly",
+        external_link: "https://x.com/holly",
+        avatar: "https://example.com/holly.jpg",
+        x_handle: "holly",
+        disconnected: false,
+        locked: false,
         organization_id: "org-smoke",
         organization_name: "Smoke Org",
         queue_paused: false
@@ -100,14 +120,14 @@ const server = http.createServer(async (req, res) => {
       x_handle: String(body.x_handle || "").replace(/^@/, ""),
       buffer_channel_id: body.buffer_channel_id || null,
       buffer_channel_name: body.buffer_channel_name || null,
-      content_mode: body.content_mode || "news",
+      content_mode: body.content_mode || "both",
       post_language: body.post_language || "en-US",
       x_premium: Boolean(body.x_premium),
       enabled: body.enabled !== false,
-      ai_provider: body.ai_provider || "gemini_paid",
-      ai_configured: Boolean(body.ai_api_key),
-      gemini_configured: (body.ai_provider || "gemini_paid") !== "deepseek_paid" && Boolean(body.ai_api_key),
-      deepseek_configured: body.ai_provider === "deepseek_paid" && Boolean(body.ai_api_key),
+      ai_provider: "deepseek_paid",
+      ai_configured: aiSettings.deepseek_configured,
+      gemini_configured: false,
+      deepseek_configured: aiSettings.deepseek_configured,
       buffer_configured: Boolean(body.buffer_api_key),
       router_slot_id: slot.id,
       router_slot_index: slot.slot_index,
@@ -143,14 +163,14 @@ const server = http.createServer(async (req, res) => {
       x_handle: String(body.x_handle || "").replace(/^@/, ""),
       buffer_channel_id: body.buffer_channel_id || null,
       buffer_channel_name: body.buffer_channel_name || null,
-      content_mode: body.content_mode || "news",
+      content_mode: body.content_mode || old.content_mode || "both",
       post_language: body.post_language || old.post_language || "en-US",
       x_premium: Boolean(body.x_premium),
       enabled: body.enabled !== false,
-      ai_provider: body.ai_provider || old.ai_provider || "gemini_paid",
-      ai_configured: Boolean(body.ai_api_key) || old.ai_configured,
-      gemini_configured: ((body.ai_provider || old.ai_provider || "gemini_paid") !== "deepseek_paid" && (Boolean(body.ai_api_key) || old.gemini_configured)),
-      deepseek_configured: ((body.ai_provider || old.ai_provider) === "deepseek_paid" && (Boolean(body.ai_api_key) || old.deepseek_configured)),
+      ai_provider: "deepseek_paid",
+      ai_configured: aiSettings.deepseek_configured,
+      gemini_configured: false,
+      deepseek_configured: aiSettings.deepseek_configured,
       buffer_configured: Boolean(body.buffer_api_key) || old.buffer_configured,
       source_ids: selected.map((s) => s.id),
       sources: selected
