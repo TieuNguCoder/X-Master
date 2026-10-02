@@ -295,6 +295,10 @@ async function masterFetch(env,path,init={}){
   headers.set("content-type","application/json");
   headers.set("x-child-id",env.CHILD_ID);
   headers.set("x-child-secret",env.CHILD_SECRET);
+  const target=new Request("https://x-master.internal"+path,{...init,headers});
+  if(env.MASTER&&typeof env.MASTER.fetch==="function"){
+    return env.MASTER.fetch(target);
+  }
   return fetch(env.MASTER_ROOT.replace(/\\\/$/,"")+path,{...init,headers});
 }
 function sessionFrom(request){
