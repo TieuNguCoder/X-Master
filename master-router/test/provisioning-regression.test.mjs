@@ -169,6 +169,75 @@ try {
   assert.equal(deleteProbeCount, 2);
   console.log("real Cloudflare Worker DELETE + absence verification: PASS");
 
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    if (u.endsWith("/workers/scripts?per_page=1000") && method === "GET") {
+      return cfJson({ success: true, result: [{ id: "x-master-router" }, { id: "xmr-user-r1-abc" }] });
+    }
+    if (u.endsWith("/billable/usage") && method === "GET") {
+      return cfJson({
+        success: true,
+        result: [
+          {
+            ChargeDescription: "Workers Standard Requests — daily usage",
+            ConsumedQuantity: 125000,
+            ConsumedUnit: "Requests",
+            BilledCost: 0,
+            BillingCurrency: "USD",
+            BillingPeriodStart: "2026-10-01T00:00:00Z",
+            BillingPeriodEnd: "2026-11-01T00:00:00Z",
+            x_BillableMetricId: "workers_standard_requests",
+            x_BillableMetricName: "Workers Standard Requests",
+            x_ProductFamilyName: "Workers"
+          },
+          {
+            ChargeDescription: "D1 Rows Read — daily usage",
+            ConsumedQuantity: 900000,
+            ConsumedUnit: "Rows",
+            BilledCost: 0,
+            BillingCurrency: "USD",
+            BillingPeriodStart: "2026-10-01T00:00:00Z",
+            BillingPeriodEnd: "2026-11-01T00:00:00Z",
+            x_BillableMetricId: "d1_rows_read",
+            x_BillableMetricName: "D1 Rows Read",
+            x_ProductFamilyName: "D1"
+          }
+        ]
+      });
+    }
+    throw new Error("unexpected usage fetch: " + u + " " + method);
+  };
+  const usageSummary = await __test.cloudflareUsageSummary({
+    CF_ACCOUNT_ID: "account123456",
+    CF_API_TOKEN: "token-12345678901234567890"
+  });
+  assert.equal(usageSummary.worker_count, 2);
+  assert.equal(usageSummary.billing.available, true);
+  assert.equal(usageSummary.billing.metrics.length, 2);
+  assert.equal(usageSummary.billing.metrics.find((x) => x.metric_id === "workers_standard_requests").quantity, 125000);
+  console.log("Cloudflare Worker count + billable usage aggregation: PASS");
+
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    if (u.endsWith("/workers/scripts?per_page=1000") && method === "GET") {
+      return cfJson({ success: true, result: [{ id: "x-master-router" }] });
+    }
+    if (u.endsWith("/billable/usage") && method === "GET") {
+      return cfJson({ success: false, errors: [{ message: "permission denied" }] }, 403);
+    }
+    throw new Error("unexpected usage permission fetch: " + u + " " + method);
+  };
+  const limitedUsage = await __test.cloudflareUsageSummary({
+    CF_ACCOUNT_ID: "account123456",
+    CF_API_TOKEN: "token-12345678901234567890"
+  });
+  assert.equal(limitedUsage.worker_count, 1);
+  assert.equal(limitedUsage.billing.available, false);
+  assert.equal(limitedUsage.billing.permission_required, true);
+  console.log("Cloudflare usage gracefully handles missing Billing Read: PASS");
+
   const airdropPrompt = __test.rewritePrompt(
     "Qyrolabs waitlist is open. Reward: XP. Join https://qyrolabs.space and complete the tasks.",
     { content_mode: "airdrop", x_premium: 0 }
