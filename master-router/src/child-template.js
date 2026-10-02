@@ -454,6 +454,8 @@ export default {
       return new Response(data,{status:r.status,headers});
     }
     if(url.pathname==="/api/me"&&request.method==="GET") return proxyAuthed(request,env,"/internal/child/me");
+    if(url.pathname==="/api/settings/ai"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/settings/ai");
+    if(url.pathname==="/api/settings/ai/test"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/settings/ai/test");
     if(url.pathname==="/api/buffer/channels"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/buffer/channels");
     if(url.pathname==="/api/accounts"&&request.method==="POST") return proxyAuthed(request,env,"/internal/child/accounts");
     const tm=url.pathname.match(/^\\/api\\/accounts\\/([^/]+)\\/test-post$/);
