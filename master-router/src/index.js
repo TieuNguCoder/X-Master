@@ -582,30 +582,6 @@ async function processAccountRoute(env, eventId, account, sourceText) {
   }
 }
 
-async function processEventRoutes(env, eventId, routed, sourceText) {
-  await Promise.all(routed.map(async (account) => {
-    try {
-      return await invokeAccountRouter(env, account, "/process", {
-        event_id: eventId,
-        account_id: account.id,
-        text: sourceText
-      });
-    } catch (error) {
-      const detail = safeError(error);
-      await env.DB.prepare(
-        "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
-      ).bind(detail, eventId, account.id).run().catch(() => {});
-      await audit(env, "system", "router", "x_account.router_failed", "x_account", account.id, {
-        event_id: eventId,
-        child_id: account.child_id,
-        router_slot_id: account.router_slot_id || null,
-        error: detail
-      }).catch(() => {});
-      return { posted: false, error: detail };
-    }
-  }));
-}
-
 async function preflightInfra(env, childInfra) {
   const checks = [];
   const cloudflare = masterCloudflareInfra(env);
@@ -1219,19 +1195,12 @@ async function testXAccount(env, child, accountId) {
     secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
   }
   const text = "X-Master connection test " + new Date().toISOString();
-  const router = await accountRouterAssignment(env, account.id);
-  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
-  const result = await invokeAccountRouter(env, { ...account, ...router }, "/publish", {
-    event_id: id("test"),
-    account_id: account.id,
-    output: text
-  });
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
   await audit(env, "child", child.id, "x_account.test_posted", "x_account", account.id, {
-    router_slot_id: router.router_slot_id,
-    buffer_post_id: result.post?.id || null,
-    buffer_status: result.post?.status || null
+    buffer_post_id: post.id,
+    buffer_status: post.status || null
   });
-  return result;
+  return { posted: true, post: { id: post.id, status: post.status || null } };
 }
 
 async function deleteXAccount(env, child, accountId) {
@@ -1553,46 +1522,32 @@ async function adminTestFullPipeline(env, admin, accountId) {
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
     { ...account, post_language: accountPostLanguage(secrets) }
   );
-  const router = await accountRouterAssignment(env, account.id);
-  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
-  const published = await invokeAccountRouter(env, { ...account, ...router }, "/publish", {
-    event_id: id("test"),
-    account_id: account.id,
-    output
-  });
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
     child_id: account.child_id,
     ai_provider: provider,
-    router_slot_id: router.router_slot_id,
-    buffer_post_id: published.post?.id || null,
-    buffer_status: published.post?.status || null,
+    buffer_post_id: post.id,
+    buffer_status: post.status || null,
     output
   });
-  return { ok: true, provider, output, post: published.post };
+  return { ok: true, provider, output, post: { id: post.id, status: post.status || null } };
 }
 
 async function adminTestXAccount(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
 
   const text = "X-Master connection test " + new Date().toISOString();
-  const router = await accountRouterAssignment(env, account.id);
-  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
-  const published = await invokeAccountRouter(env, { ...account, ...router }, "/publish", {
-    event_id: id("test"),
-    account_id: account.id,
-    output: text
-  });
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
   await audit(env, "admin", admin.id, "x_account.test_posted", "x_account", account.id, {
-    router_slot_id: router.router_slot_id,
-    buffer_post_id: published.post?.id || null,
-    buffer_status: published.post?.status || null,
+    buffer_post_id: post.id,
+    buffer_status: post.status || null,
     child_id: account.child_id
   });
 
   return {
     posted: true,
     account: { id: account.id, display_name: account.display_name, child_id: account.child_id, child_name: account.child_name },
-    post: published.post
+    post: { id: post.id, status: post.status || null }
   };
 }
 
