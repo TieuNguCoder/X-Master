@@ -1,57 +1,121 @@
 # X-Master
 
-A clean rebuild of the X automation platform around one **Master Router Web** and isolated **Child Webs**.
+X-Master is an automation platform built around one central **Master Router** and isolated **User Web + Account Router** Workers.
 
 ## Product model
 
 ```text
 X-Master.exe
   ├─ Local Telegram Collector
-  └─ Deploy / connect Master Router
-             ↓
-       Master Router Web
-        ├─ Sources
-        ├─ Child Webs
-        ├─ Routing
-        └─ Logs / Health
-             ↓
-       Create Child Web
-        ├─ Child password
-        ├─ Cloudflare Account ID
-        ├─ Cloudflare API Token
-        ├─ Cloudinary Cloud Name
-        ├─ Cloudinary API Key
-        └─ Cloudinary API Secret
-             ↓
-       validate → deploy → assign sources
-             ↓
-          Child Web
-        ├─ Password login
-        ├─ Gemini API Key
-        ├─ Buffer API Key
-        ├─ X account
-        └─ content settings
+  └─ Deploy / update one Master Router
+             │
+             ├─ one Cloudflare Account ID
+             ├─ one Cloudflare API Token
+             └─ one D1 database
+                     ↓
+                Master Web
+          ┌──────────┼──────────┐
+          │          │          │
+     Telegram     User Webs    Logs
+      Catalog
+                     ↓
+          Create one User Web
+          ├─ User name
+          ├─ User password
+          └─ Cloudinary credentials only
+                     ↓
+       Master automatically deploys
+          ├─ 1 User Web Worker
+          ├─ Router R1 → X account 1
+          ├─ Router R2 → X account 2
+          ├─ Router R3 → X account 3
+          ├─ Router R4 → X account 4
+          └─ Router R5 → X account 5
 ```
 
-The tester only receives a Child Web URL and password. Infrastructure credentials never appear in the Child Web.
+The five account routers and the User Web are created under the **same Cloudflare account as Master**. Users never receive or enter Cloudflare credentials.
 
-## Ground rules
+## v0.3.0 Final Worker architecture
 
-- No infrastructure forms in the tester UI.
-- No plaintext infrastructure secrets in D1.
-- No secrets committed to Git.
-- Child deployment is transactional: validate first, deploy second, persist only after health succeeds.
-- A failed deployment must roll back resources created by that attempt.
-- Sources are managed centrally and assigned to Child Webs.
-- Buffer and Gemini are entered by the tester only.
+- Master stores one central Cloudflare Account ID/API Token as Worker secrets and uses them for all provisioning.
+- Creating a User no longer asks for another Cloudflare account or token.
+- Owner only enters the User name/password and that User's Cloudinary credentials.
+- Each User automatically receives exactly **5 persistent account-router Worker slots**.
+- Each X account is automatically assigned to one free router slot.
+- Deleting an X account releases its router slot for reuse; the router Worker remains available.
+- Existing v0.2.x Users can be migrated by **Update User Web**; existing X accounts are assigned to free router slots automatically.
+- Updating a User Web also refreshes all five router Workers to the current router code.
+- Paid AI posting is routed through the account's dedicated router Worker.
+- Gemini Free still performs the AI call on the local Collector, then the result is sent through the account router for Buffer → X publishing.
+- Master Web shows all five router slots, their generated Worker names, assignment state, and the X account attached to each slot.
+- Deleting a User deletes its User Web Worker and all five account router Workers.
+- Worker names are generated automatically from the User slug and router index, for example `xmr-user-name-r1-abc12`.
+- A later custom-domain phase can map the Master/User surfaces under `router....bemail2017.com` without changing the account-router model.
+
+## User Web
+
+Each User Web supports up to five X accounts. Every X account keeps its own:
+
+- Buffer account/API key and X channel;
+- Gemini Free, Gemini Paid, or DeepSeek Paid;
+- Telegram Sources;
+- News or Airdrop content mode;
+- Standard or Premium/Blue formatting;
+- target post language;
+- enabled/paused state;
+- dedicated router Worker slot.
+
+## Security / infrastructure rules
+
+- Cloudflare credentials exist only on Master; they are not stored in User forms.
+- User Cloudinary credentials remain encrypted in D1.
+- AI and Buffer credentials remain encrypted per X account.
+- Router Worker secrets are unique per slot and stored encrypted in Master D1.
+- Calls Master → account router and account router → Master are authenticated.
+- A failed new-User deployment rolls back the User Worker and routers created by that attempt.
+- No infrastructure secrets are committed to Git.
+
+## Current posting flow
+
+For Gemini Paid / DeepSeek Paid:
+
+```text
+Telegram
+ → Collector
+ → Master ingest + Source routing
+ → dedicated X account Router Worker
+ → authenticated Master processing
+ → AI rewrite
+ → Buffer shareNow
+ → X
+```
+
+For Gemini Free:
+
+```text
+Telegram
+ → Collector
+ → Gemini Free on Owner PC
+ → Master
+ → dedicated X account Router Worker
+ → Buffer shareNow
+ → X
+```
 
 ## Status
 
-- Phase 1: Master Router foundation — DONE
-- Phase 2: Child Web provisioning — DONE (deploy + password + source assignment + rollback)
-- Phase 3: Local Telegram Collector + Sources — FOUNDATION DONE
-- Phase 4: Gemini/Buffer processing + X posting — DONE
-- Phase 5: real end-to-end Telegram → X test — READY FOR LIVE CREDENTIAL TEST
+- Master Router + D1 — DONE
+- Central Cloudflare provisioning — DONE
+- User Web provisioning — DONE
+- Five persistent account Router Workers per User — DONE
+- Existing-account migration to router slots — DONE
+- Telegram catalog + per-account Sources — DONE
+- Gemini Free / Gemini Paid / DeepSeek Paid — DONE
+- Buffer → X posting — DONE
+- Airdrop / News formatting + hashtags — DONE
+- Per-account language — DONE
+- Custom domain `router....bemail2017.com` — LATER
+- Full Telegram image/video forwarding through Cloudinary — still pending
 
 ## v0.2.6 Per-account language
 
