@@ -212,21 +212,79 @@ function renderAccounts(){
   $("#saveBtn").disabled=!editingId&&state.accounts.length>=max;
 }
 function resetForm(){
-  editingId=null;$("#accountForm").reset();$("#aiProvider").value="gemini_free";$("#mode").value="news";$("#premium").value="0";$("#postLanguage").value="en-US";$("#customLanguage").value="";$("#enabled").value="1";
-  $("#formTitle").textContent="Thêm tài khoản X";$("#saveBtn").textContent="+ Thêm tài khoản";$("#cancelEdit").classList.add("hidden");
-  $("#aiKey").value="";$("#buffer").value="";$("#buffer").placeholder="Nhập token";updateAiUi();updateLanguageUi();renderSources([]);
+  editingId=null;
+  selectedSourceIds=new Set();
+  $("#accountForm").reset();
+  $("#mode").value="both";
+  $("#premium").value="0";
+  $("#postLanguage").value="en-US";
+  $("#customLanguage").value="";
+  $("#enabled").value="1";
+  $("#displayName").value="";
+  $("#xHandle").value="";
+  $("#bufferChannelId").value="";
+  $("#bufferChannelName").value="";
+  $("#bufferChannelsWrap").classList.add("hidden");
+  $("#formTitle").textContent="Thêm tài khoản X";
+  $("#saveBtn").textContent="+ Thêm tài khoản";
+  $("#cancelEdit").classList.add("hidden");
+  $("#buffer").value="";
+  $("#buffer").placeholder="Nhập Buffer API key";
+  updateLanguageUi();
+  renderSources();
 }
 function beginEdit(id){
   const a=state.accounts.find(x=>x.id===id);if(!a)return;
-  editingId=id;$("#formTitle").textContent="Sửa "+a.display_name;$("#saveBtn").textContent="Lưu thay đổi";$("#cancelEdit").classList.remove("hidden");
-  $("#displayName").value=a.display_name||"";$("#xHandle").value=a.x_handle||"";$("#bufferChannelId").value=a.buffer_channel_id||"";$("#bufferChannelName").value=a.buffer_channel_name||"";
-  $("#aiProvider").value=a.ai_provider||"gemini_paid";$("#mode").value=a.content_mode||"news";$("#premium").value=a.x_premium?"1":"0";
-  const lang=a.post_language||"en-US";if(knownLanguage(lang)){ $("#postLanguage").value=lang;$("#customLanguage").value=""; }else{ $("#postLanguage").value="__custom__";$("#customLanguage").value=lang; }updateLanguageUi();$("#enabled").value=a.enabled?"1":"0";
-  $("#aiKey").value="";$("#buffer").value="";updateAiUi();$("#aiKey").placeholder=a.ai_configured?"Đã lưu - nhập key mới để thay":$("#aiKey").placeholder;$("#buffer").placeholder=a.buffer_configured?"Đã lưu - nhập token mới để thay":"Nhập token";
-  $("#sourceSearch").value="";renderSources(a.source_ids||[]);window.scrollTo({top:0,behavior:"smooth"});
+  editingId=id;
+  selectedSourceIds=new Set((a.source_ids||[]).map(String));
+  $("#formTitle").textContent="Sửa "+a.display_name;
+  $("#saveBtn").textContent="Lưu thay đổi";
+  $("#cancelEdit").classList.remove("hidden");
+  $("#displayName").value=a.display_name||"";
+  $("#xHandle").value=a.x_handle||"";
+  $("#bufferChannelId").value=a.buffer_channel_id||"";
+  $("#bufferChannelName").value=a.buffer_channel_name||"";
+  $("#mode").value=a.content_mode||"both";
+  $("#premium").value=a.x_premium?"1":"0";
+  const lang=a.post_language||"en-US";
+  if(knownLanguage(lang)){
+    $("#postLanguage").value=lang;$("#customLanguage").value="";
+  }else{
+    $("#postLanguage").value="__custom__";$("#customLanguage").value=lang;
+  }
+  updateLanguageUi();
+  $("#enabled").value=a.enabled?"1":"0";
+  $("#buffer").value="";
+  $("#buffer").placeholder=a.buffer_configured?"Đã lưu - nhập Buffer key mới nếu muốn thay":"Nhập Buffer API key";
+  $("#sourceSearch").value="";
+  renderSources();
+  window.scrollTo({top:0,behavior:"smooth"});
 }
 function payload(){
-  return {display_name:$("#displayName").value.trim(),x_handle:$("#xHandle").value.trim(),ai_provider:$("#aiProvider").value,ai_api_key:$("#aiKey").value.trim(),post_language:selectedPostLanguage(),buffer_api_key:$("#buffer").value.trim(),buffer_channel_id:$("#bufferChannelId").value.trim(),buffer_channel_name:$("#bufferChannelName").value.trim(),content_mode:$("#mode").value,x_premium:$("#premium").value==="1",enabled:$("#enabled").value==="1",source_ids:checkedSources()};
+  return {
+    display_name:$("#displayName").value.trim(),
+    x_handle:$("#xHandle").value.trim(),
+    post_language:selectedPostLanguage(),
+    buffer_api_key:$("#buffer").value.trim(),
+    buffer_channel_id:$("#bufferChannelId").value.trim(),
+    buffer_channel_name:$("#bufferChannelName").value.trim(),
+    content_mode:$("#mode").value,
+    x_premium:$("#premium").value==="1",
+    enabled:$("#enabled").value==="1",
+    source_ids:checkedSources()
+  };
+}
+function applyBufferChannel(ch){
+  if(!ch)return;
+  $("#bufferChannelId").value=ch.id||"";
+  $("#bufferChannelName").value=ch.display_name||ch.name||"";
+  $("#displayName").value=ch.display_name||ch.name||"X Account";
+  $("#xHandle").value=String(ch.x_handle||ch.name||"").replace(/^@/,"");
+  if(ch.disconnected||ch.locked){
+    $("#status").textContent="Buffer thấy account nhưng channel đang "+(ch.disconnected?"DISCONNECTED":"LOCKED")+". Hãy reconnect/unlock trong Buffer trước.";
+  }else{
+    $("#status").textContent="Buffer OK · đã tự lấy "+($("#displayName").value||"X account")+(($("#xHandle").value)?" · @"+$("#xHandle").value:"")+".";
+  }
 }
 async function loadBufferChannels(){
   const key=$("#buffer").value.trim();
@@ -241,22 +299,84 @@ async function loadBufferChannels(){
       $("#status").textContent="Buffer hợp lệ nhưng chưa thấy tài khoản X nào được kết nối.";
       return;
     }
-    $("#bufferChannels").innerHTML=channels.map(ch=>'<option value="'+esc(ch.id)+'" data-name="'+esc(ch.display_name||ch.name||"")+'">'+esc(ch.display_name||ch.name||ch.id)+'</option>').join("");
-    $("#bufferChannelsWrap").classList.remove("hidden");
-    const first=channels[0];
-    $("#bufferChannelId").value=first.id||"";
-    $("#bufferChannelName").value=first.display_name||first.name||"";
-    $("#status").textContent="Đã tìm thấy "+channels.length+" tài khoản X trong Buffer.";
+    $("#bufferChannels").innerHTML=channels.map((ch,i)=>
+      '<option value="'+esc(ch.id)+'" data-index="'+i+'">'+esc(ch.display_name||ch.name||ch.id)+(ch.x_handle?' · @'+esc(ch.x_handle):'')+'</option>'
+    ).join("");
+    $("#bufferChannels").dataset.channels=JSON.stringify(channels);
+    $("#bufferChannelsWrap").classList.toggle("hidden",channels.length===1);
+    applyBufferChannel(channels[0]);
+    if(channels.length>1) $("#status").textContent+=" Có "+channels.length+" X channels; chọn đúng account trong danh sách.";
   }catch(err){
     $("#bufferChannelsWrap").classList.add("hidden");
     $("#status").textContent="Buffer lỗi: "+err.message;
   }finally{$("#loadBufferBtn").disabled=false;}
 }
-async function load(){
-  const me=await api("/api/me");state=me;showApp();$("#title").textContent=me.child.name;renderAccounts();if(!editingId)renderSources([]);
+function renderGlobalAi(){
+  const configured=Boolean(state.ai_settings?.deepseek_configured);
+  $("#globalAiState").textContent=configured?"DeepSeek: configured ✓":"DeepSeek: CHƯA CẤU HÌNH";
+  $("#globalDeepseek").placeholder=configured?"Đã lưu - nhập key mới để thay":"Nhập DeepSeek API key";
 }
-$("#loginForm").onsubmit=async e=>{e.preventDefault();$("#loginStatus").textContent="Đang đăng nhập...";try{await api("/api/login",{method:"POST",body:JSON.stringify({password:$("#password").value})});$("#password").value="";await load();resetForm();}catch(err){$("#loginStatus").textContent="Login failed: "+err.message;}};
-$("#accountForm").onsubmit=async e=>{e.preventDefault();$("#status").textContent="Đang lưu...";try{const path=editingId?"/api/accounts/"+encodeURIComponent(editingId):"/api/accounts";const method=editingId?"PATCH":"POST";await api(path,{method,body:JSON.stringify(payload())});$("#status").textContent="Đã lưu.";resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}};
+async function saveGlobalAi(){
+  const key=$("#globalDeepseek").value.trim();
+  if(!key){$("#globalAiStatus").textContent="Nhập DeepSeek API key.";return;}
+  $("#saveGlobalAi").disabled=true;
+  $("#globalAiStatus").textContent="Đang lưu DeepSeek...";
+  try{
+    await api("/api/settings/ai",{method:"POST",body:JSON.stringify({deepseek_api_key:key})});
+    $("#globalDeepseek").value="";
+    $("#globalAiStatus").textContent="Đã lưu DeepSeek dùng chung cho toàn bộ X account.";
+    await load();
+  }catch(err){$("#globalAiStatus").textContent="DeepSeek lỗi: "+err.message;}
+  finally{$("#saveGlobalAi").disabled=false;}
+}
+async function testGlobalAi(){
+  $("#testGlobalAi").disabled=true;
+  $("#globalAiStatus").textContent="Đang test DeepSeek...";
+  try{
+    const result=await api("/api/settings/ai/test",{method:"POST",body:"{}"});
+    $("#globalAiStatus").textContent="DeepSeek OK: "+String(result.output||"").slice(0,180);
+  }catch(err){$("#globalAiStatus").textContent="DeepSeek test lỗi: "+err.message;}
+  finally{$("#testGlobalAi").disabled=false;}
+}
+async function load(){
+  const me=await api("/api/me");
+  state=me;
+  showApp();
+  $("#title").textContent=me.child.name;
+  renderGlobalAi();
+  renderAccounts();
+  if(!editingId)renderSources();
+}
+$("#loginForm").onsubmit=async e=>{
+  e.preventDefault();
+  $("#loginStatus").textContent="Đang đăng nhập...";
+  try{
+    await api("/api/login",{method:"POST",body:JSON.stringify({password:$("#password").value})});
+    $("#password").value="";
+    await load();
+    resetForm();
+  }catch(err){$("#loginStatus").textContent="Login failed: "+err.message;}
+};
+$("#accountForm").onsubmit=async e=>{
+  e.preventDefault();
+  if(!state.ai_settings?.deepseek_configured){
+    $("#status").textContent="Hãy cấu hình DeepSeek dùng chung trước.";
+    return;
+  }
+  if(!$("#bufferChannelId").value.trim()){
+    $("#status").textContent="Hãy nhập Buffer key và bấm Kiểm tra Buffer trước.";
+    return;
+  }
+  $("#status").textContent="Đang lưu...";
+  try{
+    const path=editingId?"/api/accounts/"+encodeURIComponent(editingId):"/api/accounts";
+    const method=editingId?"PATCH":"POST";
+    await api(path,{method,body:JSON.stringify(payload())});
+    $("#status").textContent="Đã lưu.";
+    resetForm();
+    await load();
+  }catch(err){$("#status").textContent="Lỗi: "+err.message;}
+};
 async function testPost(id){
   if(!confirm("Gửi 1 bài test ngay lên X qua Buffer?"))return;
   $("#status").textContent="Đang gửi bài test...";
@@ -266,14 +386,28 @@ async function testPost(id){
     await load();
   }catch(err){$("#status").textContent="Test đăng X lỗi: "+err.message;}
 }
-async function removeAccount(id){if(!confirm("Xóa tài khoản X này?"))return;try{await api("/api/accounts/"+encodeURIComponent(id),{method:"DELETE"});if(editingId===id)resetForm();await load();}catch(err){$("#status").textContent="Lỗi: "+err.message;}}
-$("#cancelEdit").onclick=resetForm;$("#reloadBtn").onclick=()=>load().catch(err=>$("#status").textContent="Lỗi: "+err.message);
-$("#aiProvider").onchange=updateAiUi;
+async function removeAccount(id){
+  if(!confirm("Xóa tài khoản X này?"))return;
+  try{
+    await api("/api/accounts/"+encodeURIComponent(id),{method:"DELETE"});
+    if(editingId===id)resetForm();
+    await load();
+  }catch(err){$("#status").textContent="Lỗi: "+err.message;}
+}
+$("#cancelEdit").onclick=resetForm;
+$("#reloadBtn").onclick=()=>load().catch(err=>$("#status").textContent="Lỗi: "+err.message);
 $("#postLanguage").onchange=updateLanguageUi;
 $("#loadBufferBtn").onclick=loadBufferChannels;
-$("#bufferChannels").onchange=()=>{const o=$("#bufferChannels").selectedOptions[0];if(!o)return;$("#bufferChannelId").value=o.value;$("#bufferChannelName").value=o.dataset.name||o.textContent||"";};
-$("#sourceSearch").oninput=()=>{const selected=checkedSources();renderSources(selected);};
-updateAiUi();
+$("#bufferChannels").onchange=()=>{
+  let channels=[];
+  try{channels=JSON.parse($("#bufferChannels").dataset.channels||"[]");}catch{}
+  const o=$("#bufferChannels").selectedOptions[0];
+  if(!o)return;
+  applyBufferChannel(channels[Number(o.dataset.index||0)]);
+};
+$("#sourceSearch").oninput=renderSources;
+$("#saveGlobalAi").onclick=saveGlobalAi;
+$("#testGlobalAi").onclick=testGlobalAi;
 updateLanguageUi();
 load().catch(()=>showLogin());
 </script>
