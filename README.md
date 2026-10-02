@@ -35,6 +35,15 @@ X-Master.exe
 
 The five account routers and the User Web are created under the **same Cloudflare account as Master**. Users never receive or enter Cloudflare credentials.
 
+## v0.3.1 Verified Worker lifecycle
+
+- **Stop Workers** is no longer a database-only pause: Master disables the real `workers.dev` subdomain for the User Web and each existing account-router Worker, verifies the disabled state, and only then records the User as paused.
+- **Start Workers** re-enables the real Cloudflare Worker subdomains and verifies they are enabled before the User returns to ready status.
+- **Delete User + Workers** calls Cloudflare's Worker Script DELETE with `force=true`, probes the script again, and removes D1 User data only after every known Worker is confirmed absent.
+- Existing v0.2.x User records can reuse their encrypted legacy Cloudflare account/token for cleanup when those credentials are still present.
+- If a legacy Worker belongs to an unknown old Cloudflare account and its credentials are unavailable, deletion is refused instead of pretending the Worker was deleted.
+- Updating a legacy User preserves any old Cloudflare cleanup credentials while normal v0.3.x provisioning continues to use only the central Master Cloudflare account.
+
 ## v0.3.0 Final Worker architecture
 
 - Master stores one central Cloudflare Account ID/API Token as Worker secrets and uses them for all provisioning.
