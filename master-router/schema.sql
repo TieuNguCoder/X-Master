@@ -152,6 +152,34 @@ CREATE TABLE IF NOT EXISTS x_accounts (
 CREATE INDEX IF NOT EXISTS idx_x_accounts_child
 ON x_accounts(child_id, created_at);
 
+CREATE TABLE IF NOT EXISTS child_router_slots (
+  id TEXT PRIMARY KEY,
+  child_id TEXT NOT NULL,
+  slot_index INTEGER NOT NULL
+    CHECK(slot_index BETWEEN 1 AND 5),
+  account_id TEXT UNIQUE,
+  worker_name TEXT NOT NULL,
+  web_url TEXT,
+  router_secret_hash TEXT NOT NULL,
+  encrypted_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'provisioning'
+    CHECK(status IN ('provisioning','ready','assigned','error')),
+  last_health_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(child_id, slot_index),
+  FOREIGN KEY(child_id) REFERENCES children(id) ON DELETE CASCADE,
+  FOREIGN KEY(account_id) REFERENCES x_accounts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_child_router_slots_child
+ON child_router_slots(child_id, slot_index);
+
+CREATE INDEX IF NOT EXISTS idx_child_router_slots_account
+ON child_router_slots(account_id)
+WHERE account_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS x_account_sources (
   account_id TEXT NOT NULL,
   source_id TEXT NOT NULL,
