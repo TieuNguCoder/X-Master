@@ -895,6 +895,13 @@ async function routerCallSecret(env, slot) {
   return secret;
 }
 
+async function accountRouterAssignment(env, accountId) {
+  return env.DB.prepare(
+    `SELECT id AS router_slot_id,web_url AS router_url,status AS router_status
+       FROM child_router_slots WHERE account_id=? LIMIT 1`
+  ).bind(accountId).first();
+}
+
 async function invokeAccountRouter(env, account, path, body) {
   if (!account.router_slot_id || !account.router_url) {
     throw Object.assign(new Error("router_slot_missing"), { status: 409 });
@@ -1200,12 +1207,19 @@ async function testXAccount(env, child, accountId) {
     secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
   }
   const text = "X-Master connection test " + new Date().toISOString();
-  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
-  await audit(env, "child", child.id, "x_account.test_posted", "x_account", account.id, {
-    buffer_post_id: post.id,
-    buffer_status: post.status || null
+  const router = await accountRouterAssignment(env, account.id);
+  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
+  const result = await invokeAccountRouter(env, { ...account, ...router }, "/publish", {
+    event_id: id("test"),
+    account_id: account.id,
+    output: text
   });
-  return { posted: true, post: { id: post.id, status: post.status || null } };
+  await audit(env, "child", child.id, "x_account.test_posted", "x_account", account.id, {
+    router_slot_id: router.router_slot_id,
+    buffer_post_id: result.post?.id || null,
+    buffer_status: result.post?.status || null
+  });
+  return result;
 }
 
 async function deleteXAccount(env, child, accountId) {
@@ -1527,32 +1541,46 @@ async function adminTestFullPipeline(env, admin, accountId) {
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
     { ...account, post_language: accountPostLanguage(secrets) }
   );
-  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
+  const router = await accountRouterAssignment(env, account.id);
+  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
+  const published = await invokeAccountRouter(env, { ...account, ...router }, "/publish", {
+    event_id: id("test"),
+    account_id: account.id,
+    output
+  });
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
     child_id: account.child_id,
     ai_provider: provider,
-    buffer_post_id: post.id,
-    buffer_status: post.status || null,
+    router_slot_id: router.router_slot_id,
+    buffer_post_id: published.post?.id || null,
+    buffer_status: published.post?.status || null,
     output
   });
-  return { ok: true, provider, output, post: { id: post.id, status: post.status || null } };
+  return { ok: true, provider, output, post: published.post };
 }
 
 async function adminTestXAccount(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
 
   const text = "X-Master connection test " + new Date().toISOString();
-  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
+  const router = await accountRouterAssignment(env, account.id);
+  if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
+  const published = await invokeAccountRouter(env, { ...account, ...router }, "/publish", {
+    event_id: id("test"),
+    account_id: account.id,
+    output: text
+  });
   await audit(env, "admin", admin.id, "x_account.test_posted", "x_account", account.id, {
-    buffer_post_id: post.id,
-    buffer_status: post.status || null,
+    router_slot_id: router.router_slot_id,
+    buffer_post_id: published.post?.id || null,
+    buffer_status: published.post?.status || null,
     child_id: account.child_id
   });
 
   return {
     posted: true,
     account: { id: account.id, display_name: account.display_name, child_id: account.child_id, child_name: account.child_name },
-    post: { id: post.id, status: post.status || null }
+    post: published.post
   };
 }
 
