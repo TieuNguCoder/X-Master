@@ -1059,6 +1059,39 @@ async function childCloudinarySecrets(env, childId) {
   return result;
 }
 
+async function uploadCloudinaryImage(cloudinary, item) {
+  const mime = String(item?.mime_type || "image/jpeg").slice(0, 100);
+  const encoded = String(item?.data_base64 || "");
+  if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 16_000_000) {
+    throw Object.assign(new Error("telegram_image_payload_invalid_or_too_large"), { status: 413, expose: true });
+  }
+
+  const auth = btoa(cloudinary.cloudinary_api_key + ":" + cloudinary.cloudinary_api_secret);
+  const form = new FormData();
+  form.append("file", "data:" + mime + ";base64," + encoded);
+
+  const response = await fetch(
+    "https://api.cloudinary.com/v1_1/" + encodeURIComponent(cloudinary.cloudinary_cloud_name) + "/image/upload",
+    {
+      method: "POST",
+      headers: { Authorization: "Basic " + auth },
+      body: form
+    }
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.secure_url) {
+    const detail = body?.error?.message || body?.message || ("HTTP " + response.status);
+    throw Object.assign(new Error("cloudinary_upload:" + detail), { status: 502, expose: true });
+  }
+  return {
+    kind: "image",
+    url: String(body.secure_url),
+    public_id: body.public_id || null,
+    width: body.width || null,
+    height: body.height || null
+  };
+}
+
 async function uploadChildImages(env, childId, incomingMedia) {
   const images = (Array.isArray(incomingMedia) ? incomingMedia : [])
     .filter((item) => item && item.kind === "image" && item.data_base64)
@@ -1066,42 +1099,7 @@ async function uploadChildImages(env, childId, incomingMedia) {
   if (!images.length) return [];
 
   const cloudinary = await childCloudinarySecrets(env, childId);
-  const auth = btoa(cloudinary.cloudinary_api_key + ":" + cloudinary.cloudinary_api_secret);
-  const assets = [];
-
-  for (const item of images) {
-    const mime = String(item.mime_type || "image/jpeg").slice(0, 100);
-    const encoded = String(item.data_base64 || "");
-    if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 16_000_000) {
-      throw Object.assign(new Error("telegram_image_payload_invalid_or_too_large"), { status: 413, expose: true });
-    }
-
-    const form = new FormData();
-    form.append("file", "data:" + mime + ";base64," + encoded);
-
-    const response = await fetch(
-      "https://api.cloudinary.com/v1_1/" + encodeURIComponent(cloudinary.cloudinary_cloud_name) + "/image/upload",
-      {
-        method: "POST",
-        headers: { Authorization: "Basic " + auth },
-        body: form
-      }
-    );
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok || !body.secure_url) {
-      const detail = body?.error?.message || body?.message || ("HTTP " + response.status);
-      throw Object.assign(new Error("cloudinary_upload:" + detail), { status: 502, expose: true });
-    }
-    assets.push({
-      kind: "image",
-      url: String(body.secure_url),
-      public_id: body.public_id || null,
-      width: body.width || null,
-      height: body.height || null
-    });
-  }
-
-  return assets;
+  return Promise.all(images.map((item) => uploadCloudinaryImage(cloudinary, item)));
 }
 
 async function preflightInfra(env, childInfra) {
@@ -2395,7 +2393,7 @@ async function ingestEvent(env, request, ctx) {
   const assetsByChild = new Map();
   const mediaErrors = new Map();
   if (incomingMedia.some((item) => item?.kind === "image" && item?.data_base64)) {
-    for (const childId of uniqueChildren) {
+    await Promise.all(uniqueChildren.map(async (childId) => {
       try {
         const assets = await uploadChildImages(env, childId, incomingMedia);
         assetsByChild.set(childId, assets);
@@ -2411,7 +2409,7 @@ async function ingestEvent(env, request, ctx) {
           error: detail
         }).catch(() => {});
       }
-    }
+    }));
   }
 
   const routerJobs = [];
@@ -2735,7 +2733,8 @@ export const __test = {
   fitStandardX,
   geminiRewrite,
   deepseekRewrite,
-  bufferCreateNow
+  bufferCreateNow,
+  uploadCloudinaryImage
 };
 
 export default {
