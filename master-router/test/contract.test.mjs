@@ -8,11 +8,13 @@ const routerSource = readFileSync(new URL("../src/index.js", import.meta.url), "
 const childTemplate = readFileSync(new URL("../src/child-template.js", import.meta.url), "utf8");
 const accountRouterTemplate = readFileSync(new URL("../src/account-router-template.js", import.meta.url), "utf8");
 
-for (const label of ["User Webs", "Telegram Catalog", "Logs", "Cloudflare", "Cloudinary"]) {
+for (const label of ["User Webs", "Cloudflare Usage", "Telegram Catalog", "Logs", "Cloudflare", "Cloudinary"]) {
   assert.ok(html.includes(label), "Master UI missing " + label);
 }
 assert.ok(js.includes("/api/admin/children/preflight"));
 assert.ok(js.includes("/api/admin/children"));
+assert.ok(js.includes("/api/admin/cloudflare-usage"));
+assert.ok(js.includes("loadCloudflareUsage"));
 assert.ok(js.includes("Test AI"));
 assert.ok(js.includes("Test full pipeline"));
 assert.ok(js.includes("Stop Workers"));
@@ -51,6 +53,8 @@ assert.ok(routerSource.includes("/collector/local-ai-result"));
 assert.ok(routerSource.includes("/update-code"));
 assert.ok(routerSource.includes("CF_ACCOUNT_ID"));
 assert.ok(routerSource.includes("CF_API_TOKEN"));
+assert.ok(routerSource.includes("/billable/usage"));
+assert.ok(routerSource.includes("cloudflareUsageSummary"));
 assert.ok(routerSource.includes("ensureChildRouterSlots"));
 assert.ok(routerSource.includes("setCloudflareWorkerEnabled"));
 assert.ok(routerSource.includes("deleteCloudflareWorkerVerified"));
