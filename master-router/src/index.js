@@ -892,16 +892,36 @@ async function bufferCreateNow(apiKey, channelId, text) {
   return result.post;
 }
 
-async function processAccountRoute(env, eventId, account, sourceText) {
+async function processAccountRoute(env, eventId, account, sourceText, assets = []) {
   try {
     let secrets = {};
     if (account.encrypted_json) {
       secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
     }
-    const provider = accountAiProvider(secrets);
-    const accountWithLanguage = { ...account, post_language: accountPostLanguage(secrets) };
-    const rewritten = await rewriteWithProvider(provider, secrets, sourceText, accountWithLanguage);
-    const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, rewritten);
+
+    const ai = await childAiSettings(env, account.child_id, true);
+    if (!ai.deepseek_api_key) {
+      throw Object.assign(new Error("deepseek_api_key_missing_for_user"), { status: 400, expose: true });
+    }
+
+    const accountWithSettings = {
+      ...account,
+      content_mode: ["news","airdrop","both"].includes(String(secrets.content_mode || ""))
+        ? String(secrets.content_mode)
+        : (account.content_mode || "both"),
+      post_language: accountPostLanguage(secrets)
+    };
+
+    const rewritten = String(sourceText || "").trim()
+      ? await deepseekRewrite(ai.deepseek_api_key, sourceText, accountWithSettings)
+      : "";
+
+    const post = await bufferCreateNow(
+      secrets.buffer_api_key,
+      account.buffer_channel_id,
+      rewritten,
+      assets
+    );
 
     await env.DB.prepare(
       "UPDATE ingest_account_routes SET status='posted',error=NULL WHERE event_id=? AND account_id=?"
@@ -912,10 +932,17 @@ async function processAccountRoute(env, eventId, account, sourceText) {
       buffer_post_id: post.id,
       buffer_status: post.status || null,
       child_id: account.child_id,
+      ai_provider: "deepseek_paid",
       source_length: String(sourceText || "").length,
-      output_length: rewritten.length
+      output_length: rewritten.length,
+      asset_count: Array.isArray(assets) ? assets.length : 0
     });
-    return { posted: true, post: { id: post.id, status: post.status || null }, output: rewritten };
+    return {
+      posted: true,
+      post: { id: post.id, status: post.status || null },
+      output: rewritten,
+      asset_count: Array.isArray(assets) ? assets.length : 0
+    };
   } catch (error) {
     const detail = safeError(error);
     await env.DB.prepare(
@@ -1853,46 +1880,45 @@ async function loadAccountSecrets(env, accountId) {
 }
 
 async function adminTestGemini(env, admin, accountId) {
-  const { account, secrets } = await loadAccountSecrets(env, accountId);
-  const provider = accountAiProvider(secrets);
-  if (provider === "gemini_free") {
-    throw Object.assign(new Error("gemini_free_runs_on_collector_test_with_a_real_telegram_post"), { status: 409 });
-  }
-  const output = await rewriteWithProvider(
-    provider,
-    secrets,
+  const { account } = await loadAccountSecrets(env, accountId);
+  const ai = await childAiSettings(env, account.child_id, true);
+  if (!ai.deepseek_api_key) throw Object.assign(new Error("deepseek_api_key_missing_for_user"), { status: 400 });
+
+  const output = await deepseekRewrite(
+    ai.deepseek_api_key,
     "X-Master AI connection test. Rewrite this into a short X post.",
-    { ...account, post_language: accountPostLanguage(secrets) }
+    { ...account, content_mode: "news", post_language: "en-US" }
   );
   await audit(env, "admin", admin.id, "x_account.ai_test_ok", "x_account", account.id, {
     child_id: account.child_id,
-    ai_provider: provider,
+    ai_provider: "deepseek_paid",
     output
   });
-  return { ok: true, provider, output };
+  return { ok: true, provider: "deepseek_paid", output };
 }
 
 async function adminTestFullPipeline(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
-  const provider = accountAiProvider(secrets);
-  if (provider === "gemini_free") {
-    throw Object.assign(new Error("gemini_free_runs_on_collector_test_with_a_real_telegram_post"), { status: 409 });
-  }
-  const output = await rewriteWithProvider(
-    provider,
-    secrets,
+  const ai = await childAiSettings(env, account.child_id, true);
+  if (!ai.deepseek_api_key) throw Object.assign(new Error("deepseek_api_key_missing_for_user"), { status: 400 });
+
+  const mode = ["news","airdrop","both"].includes(String(secrets.content_mode || ""))
+    ? String(secrets.content_mode)
+    : (account.content_mode || "both");
+  const output = await deepseekRewrite(
+    ai.deepseek_api_key,
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
-    { ...account, post_language: accountPostLanguage(secrets) }
+    { ...account, content_mode: mode, post_language: accountPostLanguage(secrets) }
   );
-  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
+  const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output, []);
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
     child_id: account.child_id,
-    ai_provider: provider,
+    ai_provider: "deepseek_paid",
     buffer_post_id: post.id,
     buffer_status: post.status || null,
     output
   });
-  return { ok: true, provider, output, post: { id: post.id, status: post.status || null } };
+  return { ok: true, provider: "deepseek_paid", output, post: { id: post.id, status: post.status || null } };
 }
 
 async function adminTestXAccount(env, admin, accountId) {
