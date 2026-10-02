@@ -35,7 +35,6 @@ try {
   console.log("new-account workers.dev subdomain creation: PASS");
 
   let deleteCalled = false;
-  let healthCalls = 0;
   globalThis.setTimeout = (fn) => {
     fn();
     return 0;
@@ -49,14 +48,7 @@ try {
       return cfJson({ success: true, result: {} });
     }
     if (u.includes("/workers/scripts/") && u.endsWith("/subdomain") && method === "POST") {
-      return cfJson({ success: true, result: {} });
-    }
-    if (u.endsWith("/workers/subdomain") && method === "GET") {
-      return cfJson({ success: true, result: { subdomain: "xmaster-test" } });
-    }
-    if (u.startsWith("https://xm-") && u.endsWith(".xmaster-test.workers.dev/health")) {
-      healthCalls += 1;
-      return new Response("not ready", { status: 503 });
+      return cfJson({ success: false, errors: [{ message: "subdomain enable failed" }] }, 500);
     }
     if (u.includes("/workers/scripts/") && method === "DELETE") {
       deleteCalled = true;
@@ -72,12 +64,11 @@ try {
       "child-secret",
       "https://master.example"
     ),
-    /child_health_failed/
+    /cloudflare/
   );
 
-  assert.equal(healthCalls, 12);
-  assert.equal(deleteCalled, true, "orphan Child Worker must be deleted after health failure");
-  console.log("child health failure rollback DELETE: PASS");
+  assert.equal(deleteCalled, true, "orphan User Web Worker must be deleted after provisioning failure");
+  console.log("User Web provisioning rollback DELETE: PASS");
 
   const routerName = __test.accountRouterWorkerName(
     { id: "ch_1234567890", name: "Tester Alpha", slug: "tester-alpha" },
@@ -122,7 +113,7 @@ try {
   );
   assert.ok(routerDeploy.workerName.includes("-r3-"));
   assert.ok(routerDeploy.webUrl.endsWith(".xmaster-test.workers.dev"));
-  console.log("account router Worker deploy + health: PASS");
+  console.log("account router Worker upload + workers.dev enable: PASS");
 
   const airdropPrompt = __test.rewritePrompt(
     "Qyrolabs waitlist is open. Reward: XP. Join https://qyrolabs.space and complete the tasks.",
