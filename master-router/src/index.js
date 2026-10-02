@@ -1175,7 +1175,8 @@ async function createChild(env, request, admin) {
   if (name.length < 2) throw Object.assign(new Error("child_name_required"), { status: 400 });
   if (password.length < 8) throw Object.assign(new Error("password_too_short"), { status: 400 });
 
-  const infra = normalizeInfra(body);
+  const childInfra = normalizeChildInfra(body);
+  const cloudflare = masterCloudflareInfra(env);
 
   const jobId = id("job");
   await env.DB.prepare(
@@ -1187,7 +1188,7 @@ async function createChild(env, request, admin) {
   let deployed = false;
 
   try {
-    await preflightInfra(infra);
+    await preflightInfra(env, childInfra);
 
     childId = id("ch");
     const slugBase = slugify(name);
@@ -1195,7 +1196,7 @@ async function createChild(env, request, admin) {
     const passwordHash = await createPasswordHash(password);
     const childSecret = randomHex(32);
     const childSecretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
-    const encryptedInfra = await encryptJson(env.MASTER_KEY, { ...infra, child_secret: childSecret });
+    const encryptedInfra = await encryptJson(env.MASTER_KEY, { ...childInfra, child_secret: childSecret });
 
     await env.DB.batch([
       env.DB.prepare(
@@ -1215,13 +1216,23 @@ async function createChild(env, request, admin) {
 
     const masterRoot = new URL(request.url).origin;
     const child = { id: childId, name, slug };
-    const deployedResult = await deployChildWorker(infra, child, childSecret, masterRoot);
+    const deployedResult = await deployChildWorker(cloudflare, child, childSecret, masterRoot);
     workerName = deployedResult.workerName;
     deployed = true;
 
     await env.DB.prepare(
-      "UPDATE children SET status='ready',worker_name=?,web_url=?,last_health_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+      "UPDATE children SET worker_name=?,web_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(workerName, deployedResult.webUrl, childId).run();
+
+    await env.DB.prepare(
+      "UPDATE deployment_jobs SET step=? WHERE id=?"
+    ).bind("deploy_5_router_slots", jobId).run();
+
+    const routerSlots = await ensureChildRouterSlots(env, { ...child, worker_name: workerName, web_url: deployedResult.webUrl }, masterRoot);
+
+    await env.DB.prepare(
+      "UPDATE children SET status='ready',last_health_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+    ).bind(childId).run();
 
     await env.DB.prepare(
       "UPDATE deployment_jobs SET status='success',step='ready',finished_at=CURRENT_TIMESTAMP WHERE id=?"
@@ -1230,6 +1241,7 @@ async function createChild(env, request, admin) {
     await audit(env, "admin", admin.id, "child.created", "child", childId, {
       name,
       worker_name: workerName,
+      router_slots: 5,
       account_count: 0
     });
 
@@ -1241,11 +1253,16 @@ async function createChild(env, request, admin) {
         status: "ready",
         worker_name: workerName,
         web_url: deployedResult.webUrl,
+        router_slots: await listRouterSlots(env, childId),
         account_count: 0
       }
     };
   } catch (error) {
-    if (deployed && workerName) await deleteChildWorker(infra, workerName, true);
+    if (childId) {
+      const slots = await listRouterSlots(env, childId).catch(() => []);
+      for (const slot of slots) await deleteChildWorker(cloudflare, slot.worker_name, true);
+    }
+    if (deployed && workerName) await deleteChildWorker(cloudflare, workerName, true);
     if (childId) {
       await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run().catch(() => {});
     }
@@ -1306,9 +1323,8 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   if (!child.encrypted_json) throw Object.assign(new Error("child_infra_missing"), { status: 409 });
 
   const stored = await decryptJson(env.MASTER_KEY, child.encrypted_json);
-  const infra = {
-    cloudflare_account_id: stored.cloudflare_account_id,
-    cloudflare_api_token: stored.cloudflare_api_token,
+  const infra = masterCloudflareInfra(env);
+  const childInfra = {
     cloudinary_cloud_name: stored.cloudinary_cloud_name,
     cloudinary_api_key: stored.cloudinary_api_key,
     cloudinary_api_secret: stored.cloudinary_api_secret
@@ -1342,7 +1358,7 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   const subdomain = await ensureWorkersSubdomain(infra);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
   const secretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
-  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...infra, child_secret: childSecret });
+  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...childInfra, child_secret: childSecret });
 
   await env.DB.batch([
     env.DB.prepare(
@@ -1382,11 +1398,13 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   await env.DB.prepare(
     "UPDATE children SET last_health_at=CURRENT_TIMESTAMP,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(childId).run();
+  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot);
   await audit(env, "admin", admin.id, "child.code_updated", "child", childId, {
     worker_name: workerName,
-    web_url: webUrl
+    web_url: webUrl,
+    router_slots: routerSlots.length
   });
-  return { updated: true, child: { id: childId, name: child.name, status: "ready", worker_name: workerName, web_url: webUrl } };
+  return { updated: true, child: { id: childId, name: child.name, status: "ready", worker_name: workerName, web_url: webUrl, router_slots: routerSlots } };
 }
 
 async function deleteChild(env, admin, childId) {
@@ -1395,12 +1413,18 @@ async function deleteChild(env, admin, childId) {
   ).bind(childId).first();
   if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
 
-  if (child.encrypted_json && child.worker_name) {
-    const infra = await decryptJson(env.MASTER_KEY, child.encrypted_json);
-    await deleteChildWorker(infra, child.worker_name);
+  const infra = masterCloudflareInfra(env);
+  const slots = await listRouterSlots(env, childId);
+  for (const slot of slots) {
+    if (slot.worker_name) await deleteChildWorker(infra, slot.worker_name, true);
   }
+  if (child.worker_name) await deleteChildWorker(infra, child.worker_name);
 
-  await audit(env, "admin", admin.id, "child.deleted", "child", childId, { name: child.name, worker_name: child.worker_name });
+  await audit(env, "admin", admin.id, "child.deleted", "child", childId, {
+    name: child.name,
+    worker_name: child.worker_name,
+    router_workers_deleted: slots.length
+  });
   await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run();
   return { deleted: true };
 }
