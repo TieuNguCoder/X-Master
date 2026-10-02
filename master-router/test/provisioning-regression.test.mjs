@@ -115,6 +115,60 @@ try {
   assert.ok(routerDeploy.webUrl.endsWith(".xmaster-test.workers.dev"));
   console.log("account router Worker upload + workers.dev enable: PASS");
 
+  // Cloudflare lifecycle must change the real Worker, then verify the resulting state.
+  const lifecycleCalls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    lifecycleCalls.push({ u, method });
+
+    if (u.endsWith("/workers/scripts/lifecycle-smoke") && method === "GET") {
+      return cfJson({ success: true, result: { id: "lifecycle-smoke" } });
+    }
+    if (u.endsWith("/workers/scripts/lifecycle-smoke/subdomain") && method === "DELETE") {
+      return cfJson({ success: true, result: { enabled: false, previews_enabled: false } });
+    }
+    if (u.endsWith("/workers/scripts/lifecycle-smoke/subdomain") && method === "POST") {
+      return cfJson({ success: true, result: { enabled: true, previews_enabled: false } });
+    }
+    if (u.endsWith("/workers/scripts/lifecycle-smoke/subdomain") && method === "GET") {
+      const enabled = lifecycleCalls.some((x) => x.method === "POST" && x.u.endsWith("/subdomain"));
+      return cfJson({ success: true, result: { enabled, previews_enabled: false } });
+    }
+    throw new Error("unexpected lifecycle fetch: " + u + " " + method);
+  };
+
+  const stopped = await __test.setCloudflareWorkerEnabled(infra, "lifecycle-smoke", false);
+  assert.equal(stopped.exists, true);
+  assert.equal(stopped.enabled, false);
+  assert.ok(lifecycleCalls.some((x) => x.method === "DELETE" && x.u.endsWith("/subdomain")));
+
+  const resumed = await __test.setCloudflareWorkerEnabled(infra, "lifecycle-smoke", true);
+  assert.equal(resumed.exists, true);
+  assert.equal(resumed.enabled, true);
+  assert.ok(lifecycleCalls.some((x) => x.method === "POST" && x.u.endsWith("/subdomain")));
+  console.log("real Cloudflare Worker stop/resume + verification: PASS");
+
+  let deleteProbeCount = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    if (u.endsWith("/workers/scripts/delete-smoke") && method === "GET") {
+      deleteProbeCount += 1;
+      if (deleteProbeCount === 1) return cfJson({ success: true, result: { id: "delete-smoke" } });
+      return cfJson({ success: false, errors: [{ message: "not found" }] }, 404);
+    }
+    if (u.endsWith("/workers/scripts/delete-smoke?force=true") && method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error("unexpected verified-delete fetch: " + u + " " + method);
+  };
+  const deletedWorker = await __test.deleteCloudflareWorkerVerified(infra, "delete-smoke");
+  assert.equal(deletedWorker.deleted, true);
+  assert.equal(deletedWorker.verified_absent, true);
+  assert.equal(deleteProbeCount, 2);
+  console.log("real Cloudflare Worker DELETE + absence verification: PASS");
+
   const airdropPrompt = __test.rewritePrompt(
     "Qyrolabs waitlist is open. Reward: XP. Join https://qyrolabs.space and complete the tasks.",
     { content_mode: "airdrop", x_premium: 0 }
