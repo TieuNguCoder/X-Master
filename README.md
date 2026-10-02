@@ -35,6 +35,19 @@ X-Master.exe
 
 The five account routers and the User Web are created under the **same Cloudflare account as Master**. Users never receive or enter Cloudflare credentials.
 
+## v0.4.0 Simplified posting pipeline
+
+- Each User Web now configures **one DeepSeek API key** outside the X account form; all five X accounts share it.
+- Per-account Gemini/DeepSeek selectors and AI keys are removed from the User Web workflow.
+- Adding an X account starts with its Buffer API key. **Check Buffer** discovers the connected X channel and fills display name, handle, Buffer channel ID, connection state, and related identity automatically.
+- Content mode now supports **News**, **Airdrop**, or **News + Airdrop (auto detect)**.
+- Telegram Source selections are kept in a persistent set while searching, so selecting one channel, searching another, and selecting it no longer loses the first channel.
+- Standard X posts are trimmed with a weighted-length safety pass to avoid Buffer/X 280-character rejection.
+- Telegram image messages are downloaded by the local Collector, uploaded to that User's Cloudinary account, and attached to Buffer through the official image `assets` input.
+- Cloudinary image URLs are uploaded once per User/event and reused across that User's routed X accounts.
+- The main posting route now ignores stale per-account Gemini/DeepSeek keys from older versions, fixing mixed success/failure caused by different invalid AI keys across accounts.
+- Existing X accounts remain usable; after updating the User Web, configure the shared DeepSeek key once.
+
 ## v0.3.2 Cloudflare Usage dashboard
 
 - Master Web now has a **Cloudflare Usage** tab.
