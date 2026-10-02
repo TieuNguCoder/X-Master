@@ -266,7 +266,7 @@ try {
   Log "7/8" "Save local deployment result"
   $state = [ordered]@{
     ok = $true
-    version = "0.3.1"
+    version = "0.3.2"
     master_root = $rootUrl
     master_web = $rootUrl + "/"
     d1_database_id = $dbId
