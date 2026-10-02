@@ -418,34 +418,95 @@ async def run_collector():
         log(f"Telegram catalog synced: {payload.get('synced', 0)} joined channels")
         return catalog
 
-    async def process_local_ai_job(job: dict):
+    async def report_router_failure(job: dict, error_text: str):
+        event_id = str(job.get("event_id") or "")
+        account_id = str(job.get("account_id") or "")
+        try:
+            await asyncio.to_thread(
+                http_json,
+                master_root + "/collector/router-result",
+                "POST",
+                {"event_id": event_id, "account_id": account_id, "error": str(error_text)[:1400]},
+                {"x-collector-secret": collector_secret},
+                30,
+            )
+        except Exception as exc:
+            log(f"ROUTER failure callback error account={account_id} event={event_id}: {exc}")
+
+    async def call_account_router(job: dict, action: str, body: dict):
         account_id = str(job.get("account_id") or "")
         event_id = str(job.get("event_id") or "")
-        result = {"event_id": event_id, "account_id": account_id}
-        try:
-            output = await asyncio.to_thread(local_gemini_free_rewrite, job)
-            result["output"] = output
-            log(f"LOCAL_AI rewritten account={account_id} event={event_id} chars={len(output)}")
-        except Exception as exc:
-            result["error"] = str(exc)
-            log(f"LOCAL_AI failed account={account_id} event={event_id} error={exc}")
+        router_url = str(job.get("router_url") or "").rstrip("/")
+        issued_at = str(job.get("router_issued_at") or "")
+        signature = str(job.get("router_signature") or "")
+        if not router_url or not issued_at or not signature:
+            raise RuntimeError("router_dispatch_missing")
 
         status, payload = await asyncio.to_thread(
             http_json,
-            master_root + "/collector/local-ai-result",
+            router_url + ("/publish" if action == "publish" else "/process"),
             "POST",
-            result,
-            {"x-collector-secret": collector_secret},
-            45,
+            body,
+            {
+                "x-router-issued": issued_at,
+                "x-router-signature": signature,
+            },
+            75,
         )
-        if status == 200:
-            if payload.get("posted"):
-                post_id = (payload.get("post") or {}).get("id") or "-"
-                log(f"LOCAL_AI posted account={account_id} event={event_id} post={post_id}")
-            else:
-                log(f"LOCAL_AI result accepted account={account_id} event={event_id} error={payload.get('error') or '-'}")
-        else:
-            log(f"LOCAL_AI callback failed status={status} account={account_id} event={event_id} payload={payload}")
+        if status != 200:
+            raise RuntimeError(f"router_http_{status}:{payload}")
+        post_id = ((payload.get("post") or {}).get("id") or "-") if isinstance(payload, dict) else "-"
+        log(f"ROUTER {action.upper()} OK account={account_id} event={event_id} post={post_id}")
+        return payload
+
+    async def process_paid_router_job(job: dict):
+        account_id = str(job.get("account_id") or "")
+        event_id = str(job.get("event_id") or "")
+        try:
+            await call_account_router(
+                job,
+                "process",
+                {
+                    "event_id": event_id,
+                    "account_id": account_id,
+                    "text": str(job.get("text") or ""),
+                },
+            )
+        except Exception as exc:
+            log(f"ROUTER PROCESS failed account={account_id} event={event_id} error={exc}")
+            await report_router_failure(job, str(exc))
+
+    async def process_local_ai_job(job: dict):
+        account_id = str(job.get("account_id") or "")
+        event_id = str(job.get("event_id") or "")
+        try:
+            output = await asyncio.to_thread(local_gemini_free_rewrite, job)
+            log(f"LOCAL_AI rewritten account={account_id} event={event_id} chars={len(output)}")
+        except Exception as exc:
+            log(f"LOCAL_AI failed account={account_id} event={event_id} error={exc}")
+            await asyncio.to_thread(
+                http_json,
+                master_root + "/collector/local-ai-result",
+                "POST",
+                {"event_id": event_id, "account_id": account_id, "error": str(exc)},
+                {"x-collector-secret": collector_secret},
+                45,
+            )
+            return
+
+        try:
+            await call_account_router(
+                job,
+                "publish",
+                {
+                    "event_id": event_id,
+                    "account_id": account_id,
+                    "output": output,
+                },
+            )
+        except Exception as exc:
+            log(f"ROUTER PUBLISH failed account={account_id} event={event_id} error={exc}")
+            await report_router_failure(job, str(exc))
 
     client = TelegramClient(StringSession(session), api_id, api_hash)
     await client.connect()
@@ -519,14 +580,18 @@ async def run_collector():
             if status in (200, 202):
                 routed_accounts = payload.get("routed_accounts")
                 routed_count = len(routed_accounts) if isinstance(routed_accounts, list) else 0
+                router_jobs = payload.get("router_jobs") or []
                 local_jobs = payload.get("local_ai_jobs") or []
                 log(
                     f"ROUTED chat={label} msg={event.message.id} "
                     f"children={payload.get('routed_children', 0)} accounts={routed_count} "
-                    f"local_ai={len(local_jobs)} event={payload.get('event_id', '-')}"
+                    f"routers={len(router_jobs)} local_ai={len(local_jobs)} event={payload.get('event_id', '-')}"
                 )
-                if local_jobs:
-                    await asyncio.gather(*(process_local_ai_job(job) for job in local_jobs))
+                tasks = []
+                tasks.extend(process_paid_router_job(job) for job in router_jobs)
+                tasks.extend(process_local_ai_job(job) for job in local_jobs)
+                if tasks:
+                    await asyncio.gather(*tasks)
             else:
                 log(f"FAILED ingest status={status} chat={label} msg={event.message.id} payload={payload}")
         except Exception as exc:
@@ -589,7 +654,7 @@ class XMasterApp(tk.Tk):
         head = ttk.Frame(outer)
         head.pack(fill="x")
         ttk.Label(head, text="X-Master", font=("Segoe UI", 20, "bold")).pack(side="left")
-        ttk.Label(head, text="  Master Router · Sources · Child Webs").pack(side="left", pady=(8, 0))
+        ttk.Label(head, text="  Master Router · User Webs · 5 Account Routers").pack(side="left", pady=(8, 0))
         self.global_status = tk.StringVar(value="Checking...")
         ttk.Label(head, textvariable=self.global_status).pack(side="right", pady=(8, 0))
 
