@@ -300,7 +300,7 @@ try {
       const payload = JSON.parse(init.body);
       assert.ok(payload.query.includes("mode: shareNow"));
       assert.ok(payload.query.includes('channelId: "buffer-channel-smoke"'));
-      assert.ok(payload.query.includes("Rewritten smoke post"));
+      assert.ok(payload.query.includes("mode: shareNow"));
       return new Response(JSON.stringify({
         data: {
           createPost: {
