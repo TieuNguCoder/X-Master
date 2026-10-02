@@ -804,7 +804,7 @@ async function listRouterSlots(env, childId) {
   }));
 }
 
-async function ensureChildRouterSlots(env, child, masterRoot) {
+async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = false) {
   const existing = await listRouterSlots(env, child.id);
   const byIndex = new Map(existing.map((row) => [Number(row.slot_index), row]));
   const created = [];
@@ -812,7 +812,7 @@ async function ensureChildRouterSlots(env, child, masterRoot) {
   try {
     for (let slotIndex = 1; slotIndex <= 5; slotIndex++) {
       const current = byIndex.get(slotIndex);
-      if (current && current.web_url && (current.status === "ready" || current.status === "assigned")) continue;
+      if (!forceUpdate && current && current.web_url && (current.status === "ready" || current.status === "assigned")) continue;
 
       const slotId = current?.id || id("rs");
       const routerSecret = randomHex(32);
@@ -1451,7 +1451,7 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   await env.DB.prepare(
     "UPDATE children SET last_health_at=CURRENT_TIMESTAMP,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
   ).bind(childId).run();
-  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot);
+  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot, true);
   await audit(env, "admin", admin.id, "child.code_updated", "child", childId, {
     worker_name: workerName,
     web_url: webUrl,
