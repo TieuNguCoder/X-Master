@@ -738,6 +738,74 @@ function fallbackHashtags(sourceText, account) {
   return picked.slice(0, 4);
 }
 
+function xWeightedLength(text) {
+  const source = String(text || "");
+  const urls = extractSourceUrls(source);
+  let working = source;
+  let urlWeight = 0;
+  for (const url of urls) {
+    const idx = working.indexOf(url);
+    if (idx >= 0) {
+      working = working.slice(0, idx) + working.slice(idx + url.length);
+      urlWeight += 23;
+    }
+  }
+  let weight = urlWeight;
+  for (const ch of working) {
+    const cp = ch.codePointAt(0);
+    weight += (cp <= 0x10ff || (cp >= 0x2000 && cp <= 0x200d) || (cp >= 0x2010 && cp <= 0x201f) || (cp >= 0x2032 && cp <= 0x2037)) ? 1 : 2;
+  }
+  return weight;
+}
+
+function fitStandardX(text, maxWeight = 270) {
+  let result = String(text || "").trim();
+  if (xWeightedLength(result) <= maxWeight) return result;
+
+  const tagMatch = result.match(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu);
+  let tags = tagMatch?.[0]?.trim().split(/\s+/).filter(Boolean) || [];
+  if (tags.length > 2) tags = tags.slice(0, 2);
+
+  const urls = [...new Set(extractSourceUrls(result))];
+  let body = tagMatch ? result.slice(0, tagMatch.index).trim() : result;
+  for (const url of urls) body = body.replaceAll("🔗 " + url, "").replaceAll(url, "");
+  body = body.replace(/\n{3,}/g, "\n\n").trim();
+
+  const suffixParts = [];
+  if (urls.length) suffixParts.push(urls.map((url) => "🔗 " + url).join("\n"));
+  if (tags.length) suffixParts.push(tags.join(" "));
+  const suffix = suffixParts.join("\n\n");
+
+  const chars = [...body];
+  while (chars.length && xWeightedLength(chars.join("") + (suffix ? "\n\n" + suffix : "")) > maxWeight) {
+    chars.pop();
+  }
+  let compact = chars.join("").trimEnd();
+  if (compact && compact.length < body.length) {
+    const lastSpace = compact.lastIndexOf(" ");
+    if (lastSpace > compact.length * 0.75) compact = compact.slice(0, lastSpace);
+    compact = compact.replace(/[,:;\-–—]+$/u, "").trimEnd() + "…";
+  }
+
+  result = compact + (suffix ? (compact ? "\n\n" : "") + suffix : "");
+  while (result && xWeightedLength(result) > maxWeight) {
+    if (tags.length > 1) {
+      tags.pop();
+      const parts = [];
+      if (urls.length) parts.push(urls.map((url) => "🔗 " + url).join("\n"));
+      if (tags.length) parts.push(tags.join(" "));
+      result = compact + (parts.length ? (compact ? "\n\n" : "") + parts.join("\n\n") : "");
+    } else {
+      const compactChars = [...compact];
+      if (!compactChars.length) break;
+      compactChars.pop();
+      compact = compactChars.join("").trimEnd();
+      result = compact + (suffix ? (compact ? "\n\n" : "") + suffix : "");
+    }
+  }
+  return result.trim();
+}
+
 function cleanAiOutput(output, maxChars, sourceText, account) {
   let text = String(output || "").trim().replace(/^\s*[`"'“”]+|[`"'“”]+\s*$/g, "").trim();
   if (!text) throw Object.assign(new Error("ai:empty_response"), { status: 502, expose: true });
@@ -780,6 +848,7 @@ function cleanAiOutput(output, maxChars, sourceText, account) {
     }
     text = body + (suffix ? "\n\n" + suffix : "");
   }
+  if (!account.x_premium) text = fitStandardX(text, 270);
   return text;
 }
 
@@ -2658,6 +2727,8 @@ export const __test = {
   deleteCloudflareWorkerVerified,
   rewritePrompt,
   cleanAiOutput,
+  xWeightedLength,
+  fitStandardX,
   geminiRewrite,
   deepseekRewrite,
   bufferCreateNow
