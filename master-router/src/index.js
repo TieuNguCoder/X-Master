@@ -178,6 +178,196 @@ async function cloudflareRequest(infra, path, init = {}) {
   return body;
 }
 
+
+async function cloudflareWorkerProbe(infra, workerName) {
+  const response = await fetch(
+    "https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id +
+      "/workers/scripts/" + encodeURIComponent(workerName),
+    { headers: { Authorization: "Bearer " + infra.cloudflare_api_token } }
+  );
+  if (response.status === 404) return { exists: false, status: 404 };
+  const text = await response.text();
+  let body = {};
+  try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
+  if (!response.ok || body.success === false) {
+    const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
+    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
+  }
+  return { exists: true, status: response.status };
+}
+
+async function setCloudflareWorkerEnabled(infra, workerName, enabled) {
+  const probe = await cloudflareWorkerProbe(infra, workerName);
+  if (!probe.exists) return { worker_name: workerName, exists: false, enabled: false };
+
+  const path = "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain";
+  if (enabled) {
+    await cloudflareRequest(infra, path, {
+      method: "POST",
+      body: JSON.stringify({ enabled: true, previews_enabled: false })
+    });
+  } else {
+    await cloudflareRequest(infra, path, { method: "DELETE" });
+  }
+
+  const state = await cloudflareRequest(infra, path, { method: "GET" });
+  const actual = Boolean(state?.result?.enabled);
+  if (actual !== Boolean(enabled)) {
+    throw Object.assign(new Error("cloudflare_worker_state_verification_failed:" + workerName), { status: 502, expose: true });
+  }
+  return { worker_name: workerName, exists: true, enabled: actual };
+}
+
+async function deleteCloudflareWorkerVerified(infra, workerName) {
+  const before = await cloudflareWorkerProbe(infra, workerName);
+  if (!before.exists) {
+    return { worker_name: workerName, existed: false, deleted: false, verified_absent: true };
+  }
+
+  const response = await fetch(
+    "https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id +
+      "/workers/scripts/" + encodeURIComponent(workerName) + "?force=true",
+    {
+      method: "DELETE",
+      headers: { Authorization: "Bearer " + infra.cloudflare_api_token }
+    }
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    let body = {};
+    try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
+    const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
+    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
+  }
+
+  const after = await cloudflareWorkerProbe(infra, workerName);
+  if (after.exists) {
+    throw Object.assign(new Error("cloudflare_worker_delete_verification_failed:" + workerName), { status: 502, expose: true });
+  }
+  return { worker_name: workerName, existed: true, deleted: true, verified_absent: true };
+}
+
+function sameCloudflareInfra(a, b) {
+  return Boolean(a && b &&
+    String(a.cloudflare_account_id || "") === String(b.cloudflare_account_id || "") &&
+    String(a.cloudflare_api_token || "") === String(b.cloudflare_api_token || ""));
+}
+
+async function childCloudflareCandidates(env, child) {
+  const candidates = [{ kind: "master", infra: masterCloudflareInfra(env) }];
+  if (!child?.encrypted_json) return candidates;
+
+  try {
+    const stored = await decryptJson(env.MASTER_KEY, child.encrypted_json);
+    const legacy = {
+      cloudflare_account_id: String(stored.cloudflare_account_id || "").trim(),
+      cloudflare_api_token: String(stored.cloudflare_api_token || "").trim()
+    };
+    if (legacy.cloudflare_account_id.length >= 8 && legacy.cloudflare_api_token.length >= 16 &&
+        !candidates.some((x) => sameCloudflareInfra(x.infra, legacy))) {
+      candidates.push({ kind: "legacy", infra: legacy });
+    }
+  } catch {}
+  return candidates;
+}
+
+async function locateWorkerCandidates(env, child, workerName) {
+  const found = [];
+  const candidates = await childCloudflareCandidates(env, child);
+  for (const candidate of candidates) {
+    const probe = await cloudflareWorkerProbe(candidate.infra, workerName);
+    if (probe.exists) found.push(candidate);
+  }
+  return { found, candidates };
+}
+
+async function currentWorkersDevSubdomain(env) {
+  try {
+    const infra = masterCloudflareInfra(env);
+    const body = await cloudflareRequest(infra, "/workers/subdomain", { method: "GET" });
+    return String(body?.result?.subdomain || "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function workersDevSubdomainFromUrl(url) {
+  try {
+    const host = new URL(String(url || "")).hostname.toLowerCase();
+    const suffix = ".workers.dev";
+    if (!host.endsWith(suffix)) return "";
+    const left = host.slice(0, -suffix.length);
+    const parts = left.split(".");
+    return parts.length >= 2 ? parts[parts.length - 1] : "";
+  } catch {
+    return "";
+  }
+}
+
+async function manageChildWorkers(env, child, action) {
+  const slots = await listRouterSlots(env, child.id);
+  const targets = [
+    ...(child.worker_name ? [{ kind: "user", worker_name: child.worker_name, web_url: child.web_url || "" }] : []),
+    ...slots.filter((x) => x.worker_name).map((x) => ({
+      kind: "router",
+      worker_name: x.worker_name,
+      web_url: x.web_url || "",
+      slot_index: Number(x.slot_index)
+    }))
+  ];
+
+  const currentSubdomain = await currentWorkersDevSubdomain(env);
+  const results = [];
+  const unresolved = [];
+
+  for (const target of targets) {
+    const located = await locateWorkerCandidates(env, child, target.worker_name);
+    if (!located.found.length) {
+      const targetSubdomain = workersDevSubdomainFromUrl(target.web_url);
+      const looksLegacyUnknown = Boolean(targetSubdomain && currentSubdomain && targetSubdomain !== currentSubdomain);
+      if (looksLegacyUnknown) {
+        unresolved.push({
+          worker_name: target.worker_name,
+          workers_dev_subdomain: targetSubdomain,
+          reason: "legacy_worker_credentials_unavailable"
+        });
+        continue;
+      }
+      results.push({
+        ...target,
+        already_absent: true,
+        verified_on_known_accounts: true
+      });
+      continue;
+    }
+
+    for (const locatedCandidate of located.found) {
+      if (action === "delete") {
+        results.push({
+          ...target,
+          account_kind: locatedCandidate.kind,
+          ...(await deleteCloudflareWorkerVerified(locatedCandidate.infra, target.worker_name))
+        });
+      } else {
+        results.push({
+          ...target,
+          account_kind: locatedCandidate.kind,
+          ...(await setCloudflareWorkerEnabled(locatedCandidate.infra, target.worker_name, action === "resume"))
+        });
+      }
+    }
+  }
+
+  if (unresolved.length) {
+    const error = Object.assign(new Error(
+      "legacy_worker_credentials_required:" + unresolved.map((x) => x.worker_name).join(",")
+    ), { status: 409, expose: true });
+    error.unresolved = unresolved;
+    throw error;
+  }
+  return { action, results, targets: targets.length };
+}
+
 async function bufferGraphql(apiKey, query) {
   const response = await fetch("https://api.buffer.com", {
     method: "POST",
