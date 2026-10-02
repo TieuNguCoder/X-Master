@@ -37,6 +37,7 @@
     <section id="app" class="hidden">
       <nav class="tabs">
         <button class="tab active" data-tab="children">User Webs</button>
+        <button class="tab" data-tab="usage">Cloudflare Usage</button>
         <button class="tab" data-tab="sources">Telegram Catalog</button>
         <button class="tab" data-tab="audit">Logs</button>
       </nav>
@@ -101,6 +102,53 @@
             <button id="refreshBtn" class="ghost">Refresh</button>
           </div>
           <div id="childrenList" class="cards"></div>
+        </article>
+      </section>
+
+      <section id="tab-usage" class="tabpage hidden">
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">CLOUDFLARE USAGE</div>
+              <h2>Tài nguyên Cloudflare</h2>
+              <p class="muted">Dữ liệu lấy trực tiếp từ Cloudflare bằng API Token trung tâm của Master.</p>
+            </div>
+            <button id="usageRefreshBtn" class="ghost">Refresh</button>
+          </div>
+
+          <div id="usageStatus" class="status">Chưa tải dữ liệu.</div>
+
+          <div id="usageSummary" class="usage-grid hidden">
+            <div class="usage-card">
+              <small>Workers đang tồn tại</small>
+              <strong id="usageWorkers">-</strong>
+              <div class="progress"><span id="usageWorkersBar"></span></div>
+              <small id="usageWorkersHint" class="muted"></small>
+            </div>
+            <div class="usage-card">
+              <small>Billing period</small>
+              <strong id="usagePeriod">-</strong>
+              <small id="usageAccount" class="muted"></small>
+            </div>
+            <div class="usage-card">
+              <small>Usage-based billed cost</small>
+              <strong id="usageCost">-</strong>
+              <small class="muted">Không gồm phí cố định của gói.</small>
+            </div>
+            <div class="usage-card">
+              <small>Billing records</small>
+              <strong id="usageRecords">-</strong>
+              <small class="muted">Các metric Cloudflare trả về trong kỳ.</small>
+            </div>
+          </div>
+
+          <div id="usagePermission" class="usage-warning hidden"></div>
+
+          <div id="usageProductsWrap" class="hidden" style="margin-top:18px">
+            <div class="eyebrow">BREAKDOWN</div>
+            <h3 style="margin:5px 0 10px">Theo sản phẩm / metric</h3>
+            <div id="usageMetrics" class="usage-table"></div>
+          </div>
         </article>
       </section>
 
