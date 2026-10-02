@@ -584,15 +584,16 @@ async function processEventRoutes(env, eventId, routed, sourceText) {
   await Promise.all(routed.map((account) => processAccountRoute(env, eventId, account, sourceText)));
 }
 
-async function preflightInfra(infra) {
+async function preflightInfra(env, childInfra) {
   const checks = [];
+  const cloudflare = masterCloudflareInfra(env);
 
-  await cloudflareRequest(infra, "/workers/scripts");
-  checks.push("workers");
+  await cloudflareRequest(cloudflare, "/workers/scripts");
+  checks.push("master-cloudflare");
 
-  const auth = btoa(infra.cloudinary_api_key + ":" + infra.cloudinary_api_secret);
+  const auth = btoa(childInfra.cloudinary_api_key + ":" + childInfra.cloudinary_api_secret);
   const cloudinary = await fetch(
-    "https://api.cloudinary.com/v1_1/" + encodeURIComponent(infra.cloudinary_cloud_name) + "/usage",
+    "https://api.cloudinary.com/v1_1/" + encodeURIComponent(childInfra.cloudinary_cloud_name) + "/usage",
     { headers: { Authorization: "Basic " + auth, Accept: "application/json" } }
   );
   if (!cloudinary.ok) {
@@ -707,6 +708,180 @@ async function deleteChildWorker(infra, workerName, bestEffort = false) {
   } catch (error) {
     if (!bestEffort) throw error;
   }
+}
+
+function accountRouterWorkerName(child, slotIndex) {
+  const base = slugify(child.slug || child.name || "user").slice(0, 34) || "user";
+  return ("xmr-" + base + "-r" + slotIndex + "-" + child.id.slice(-5)).slice(0, 62);
+}
+
+async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot) {
+  const infra = masterCloudflareInfra(env);
+  const source = renderAccountRouterSource();
+  const workerName = accountRouterWorkerName(child, slotIndex);
+  const metadata = {
+    main_module: "worker.js",
+    compatibility_date: "2026-09-18",
+    bindings: [
+      { type: "plain_text", name: "ROUTER_SLOT_ID", text: slotId },
+      { type: "plain_text", name: "CHILD_ID", text: child.id },
+      { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
+      { type: "secret_text", name: "ROUTER_SECRET", text: routerSecret }
+    ]
+  };
+
+  const form = new FormData();
+  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
+  form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
+
+  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+    method: "PUT",
+    body: form
+  });
+  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+    method: "POST",
+    body: JSON.stringify({ enabled: true })
+  });
+
+  const subdomain = await ensureWorkersSubdomain(infra);
+  const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
+
+  let healthy = false;
+  let last = "";
+  for (let i = 0; i < 12; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const response = await fetch(webUrl + "/health", { headers: { "cache-control": "no-cache" } });
+      last = await response.text();
+      if (response.ok) {
+        const parsed = JSON.parse(last);
+        if (parsed.ok && parsed.slot_id === slotId && parsed.child_id === child.id) {
+          healthy = true;
+          break;
+        }
+      }
+    } catch (error) {
+      last = safeError(error);
+    }
+  }
+  if (!healthy) {
+    await deleteChildWorker(infra, workerName, true);
+    throw Object.assign(new Error("account_router_health_failed:" + last.slice(0, 400)), { status: 502, expose: true });
+  }
+  return { workerName, webUrl };
+}
+
+async function listRouterSlots(env, childId) {
+  const result = await env.DB.prepare(
+    `SELECT id,child_id,slot_index,account_id,worker_name,web_url,status,last_health_at,last_error,created_at,updated_at
+       FROM child_router_slots WHERE child_id=? ORDER BY slot_index`
+  ).bind(childId).all();
+  return (result.results || []).map((row) => ({
+    ...row,
+    assigned: Boolean(row.account_id)
+  }));
+}
+
+async function ensureChildRouterSlots(env, child, masterRoot) {
+  const existing = await listRouterSlots(env, child.id);
+  const byIndex = new Map(existing.map((row) => [Number(row.slot_index), row]));
+  const created = [];
+
+  try {
+    for (let slotIndex = 1; slotIndex <= 5; slotIndex++) {
+      const current = byIndex.get(slotIndex);
+      if (current && current.web_url && (current.status === "ready" || current.status === "assigned")) continue;
+
+      const slotId = current?.id || id("rs");
+      const routerSecret = randomHex(32);
+      const routerSecretHash = await hmacHex(env.SESSION_PEPPER, routerSecret);
+      const encryptedJson = await encryptJson(env.MASTER_KEY, { router_secret: routerSecret });
+
+      if (!current) {
+        await env.DB.prepare(
+          `INSERT INTO child_router_slots(
+             id,child_id,slot_index,worker_name,router_secret_hash,encrypted_json,status
+           ) VALUES(?,?,?,?,?,?,?)`
+        ).bind(slotId, child.id, slotIndex, accountRouterWorkerName(child, slotIndex), routerSecretHash, encryptedJson, "provisioning").run();
+      } else {
+        await env.DB.prepare(
+          `UPDATE child_router_slots
+              SET router_secret_hash=?,encrypted_json=?,status='provisioning',last_error=NULL,updated_at=CURRENT_TIMESTAMP
+            WHERE id=?`
+        ).bind(routerSecretHash, encryptedJson, slotId).run();
+      }
+
+      const deployed = await deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot);
+      await env.DB.prepare(
+        `UPDATE child_router_slots
+            SET worker_name=?,web_url=?,status=CASE WHEN account_id IS NULL THEN 'ready' ELSE 'assigned' END,
+                last_health_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`
+      ).bind(deployed.workerName, deployed.webUrl, slotId).run();
+      created.push({ id: slotId, worker_name: deployed.workerName });
+    }
+  } catch (error) {
+    const infra = masterCloudflareInfra(env);
+    for (const item of created) {
+      await deleteChildWorker(infra, item.worker_name, true);
+      await env.DB.prepare("DELETE FROM child_router_slots WHERE id=?").bind(item.id).run().catch(() => {});
+    }
+    throw error;
+  }
+
+  return listRouterSlots(env, child.id);
+}
+
+async function verifyRouterCaller(env, request) {
+  const slotId = request.headers.get("x-router-slot") || "";
+  const secret = request.headers.get("x-router-secret") || "";
+  if (!slotId || !secret) throw Object.assign(new Error("unauthorized"), { status: 401 });
+  const slot = await env.DB.prepare(
+    "SELECT * FROM child_router_slots WHERE id=?"
+  ).bind(slotId).first();
+  if (!slot) throw Object.assign(new Error("router_slot_not_found"), { status: 404 });
+  const provided = await hmacHex(env.SESSION_PEPPER, secret);
+  if (!timingSafeEqual(provided, slot.router_secret_hash)) {
+    throw Object.assign(new Error("unauthorized"), { status: 401 });
+  }
+  return slot;
+}
+
+async function routerCallSecret(env, slot) {
+  if (!slot?.encrypted_json) throw Object.assign(new Error("router_secret_missing"), { status: 500 });
+  const stored = await decryptJson(env.MASTER_KEY, slot.encrypted_json);
+  const secret = String(stored.router_secret || "");
+  if (!secret) throw Object.assign(new Error("router_secret_missing"), { status: 500 });
+  return secret;
+}
+
+async function invokeAccountRouter(env, account, path, body) {
+  if (!account.router_slot_id || !account.router_url) {
+    throw Object.assign(new Error("router_slot_missing"), { status: 409 });
+  }
+  if (account.router_status !== "assigned" && account.router_status !== "ready") {
+    throw Object.assign(new Error("router_slot_not_ready"), { status: 409 });
+  }
+  const slot = await env.DB.prepare(
+    "SELECT id,encrypted_json FROM child_router_slots WHERE id=?"
+  ).bind(account.router_slot_id).first();
+  const secret = await routerCallSecret(env, slot);
+  const response = await fetch(account.router_url + path, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-master-router-secret": secret
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw Object.assign(new Error(payload.error || ("router_http_" + response.status)), {
+      status: response.status >= 400 && response.status < 600 ? response.status : 502,
+      expose: true
+    });
+  }
+  return payload;
 }
 
 async function listSources(env) {
