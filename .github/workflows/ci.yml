@@ -134,3 +134,47 @@ jobs:
           fi
 
           node ../tools/child-live-smoke.mjs
+
+      - name: Live generated Account Router smoke
+        run: |
+          cat > ../.tmp-account-router-wrangler.jsonc <<EOF
+          {
+            "name": "x-master-account-router-smoke",
+            "main": ".tmp-account-router.mjs",
+            "compatibility_date": "2026-09-18",
+            "vars": {
+              "ROUTER_SLOT_ID": "rs_smoke",
+              "CHILD_ID": "ch_smoke",
+              "MASTER_ROOT": "http://127.0.0.1:8800",
+              "ROUTER_SECRET": "router-secret"
+            }
+          }
+          EOF
+
+          node ../tools/fake-child-master.mjs > ../fake-router-master.log 2>&1 &
+          MASTER_PID=$!
+          npx wrangler dev --local --port 8802 --config ../.tmp-account-router-wrangler.jsonc > ../account-router.log 2>&1 &
+          ROUTER_PID=$!
+
+          cleanup() {
+            kill $ROUTER_PID >/dev/null 2>&1 || true
+            kill $MASTER_PID >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8802/health >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" != "1" ]; then
+            cat ../fake-router-master.log
+            cat ../account-router.log
+            exit 1
+          fi
+
+          node ../tools/account-router-live-smoke.mjs
