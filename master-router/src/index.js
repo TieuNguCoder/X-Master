@@ -860,11 +860,21 @@ async function rewriteWithProvider(provider, secrets, text, account) {
   throw Object.assign(new Error("gemini_free_requires_collector"), { status: 409, expose: true });
 }
 
-async function bufferCreateNow(apiKey, channelId, text) {
+async function bufferCreateNow(apiKey, channelId, text, assets = []) {
   const key = String(apiKey || "").trim();
   const channel = String(channelId || "").trim();
   if (!key) throw new Error("buffer_api_key_missing");
   if (!channel) throw new Error("buffer_channel_id_missing");
+
+  const normalizedAssets = (Array.isArray(assets) ? assets : [])
+    .filter((a) => a && a.kind === "image" && /^https:\/\//i.test(String(a.url || "")))
+    .slice(0, 4);
+
+  const assetsGraphql = normalizedAssets.length
+    ? "\n      assets: [" + normalizedAssets.map((a) =>
+        "{ image: { url: " + JSON.stringify(String(a.url)) + " } }"
+      ).join(",") + "]"
+    : "";
 
   const query = `mutation CreatePost {
     createPost(input: {
@@ -872,11 +882,11 @@ async function bufferCreateNow(apiKey, channelId, text) {
       channelId: ${JSON.stringify(channel)}
       schedulingType: automatic
       mode: shareNow
-      aiAssisted: true
+      aiAssisted: true${assetsGraphql}
     }) {
       __typename
       ... on PostActionSuccess {
-        post { id text status dueAt }
+        post { id text status dueAt assets { id mimeType } }
       }
       ... on MutationError {
         message
@@ -891,6 +901,7 @@ async function bufferCreateNow(apiKey, channelId, text) {
   }
   return result.post;
 }
+
 
 async function processAccountRoute(env, eventId, account, sourceText, assets = []) {
   try {
@@ -955,6 +966,69 @@ async function processAccountRoute(env, eventId, account, sourceText, assets = [
     }).catch(() => {});
     return { posted: false, error: detail };
   }
+}
+
+async function childCloudinarySecrets(env, childId) {
+  const row = await env.DB.prepare(
+    "SELECT encrypted_json FROM child_infra WHERE child_id=?"
+  ).bind(childId).first();
+  if (!row?.encrypted_json) throw Object.assign(new Error("child_infra_missing"), { status: 409 });
+
+  const stored = await decryptJson(env.MASTER_KEY, row.encrypted_json);
+  const result = {
+    cloudinary_cloud_name: String(stored.cloudinary_cloud_name || "").trim(),
+    cloudinary_api_key: String(stored.cloudinary_api_key || "").trim(),
+    cloudinary_api_secret: String(stored.cloudinary_api_secret || "").trim()
+  };
+  if (!result.cloudinary_cloud_name || !result.cloudinary_api_key || !result.cloudinary_api_secret) {
+    throw Object.assign(new Error("cloudinary_credentials_required"), { status: 400 });
+  }
+  return result;
+}
+
+async function uploadChildImages(env, childId, incomingMedia) {
+  const images = (Array.isArray(incomingMedia) ? incomingMedia : [])
+    .filter((item) => item && item.kind === "image" && item.data_base64)
+    .slice(0, 4);
+  if (!images.length) return [];
+
+  const cloudinary = await childCloudinarySecrets(env, childId);
+  const auth = btoa(cloudinary.cloudinary_api_key + ":" + cloudinary.cloudinary_api_secret);
+  const assets = [];
+
+  for (const item of images) {
+    const mime = String(item.mime_type || "image/jpeg").slice(0, 100);
+    const encoded = String(item.data_base64 || "");
+    if (!/^[A-Za-z0-9+/=]+$/.test(encoded) || encoded.length > 16_000_000) {
+      throw Object.assign(new Error("telegram_image_payload_invalid_or_too_large"), { status: 413, expose: true });
+    }
+
+    const form = new FormData();
+    form.append("file", "data:" + mime + ";base64," + encoded);
+
+    const response = await fetch(
+      "https://api.cloudinary.com/v1_1/" + encodeURIComponent(cloudinary.cloudinary_cloud_name) + "/image/upload",
+      {
+        method: "POST",
+        headers: { Authorization: "Basic " + auth },
+        body: form
+      }
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.secure_url) {
+      const detail = body?.error?.message || body?.message || ("HTTP " + response.status);
+      throw Object.assign(new Error("cloudinary_upload:" + detail), { status: 502, expose: true });
+    }
+    assets.push({
+      kind: "image",
+      url: String(body.secure_url),
+      public_id: body.public_id || null,
+      width: body.width || null,
+      height: body.height || null
+    });
+  }
+
+  return assets;
 }
 
 async function preflightInfra(env, childInfra) {
