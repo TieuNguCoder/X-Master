@@ -325,11 +325,11 @@ async function manageChildWorkers(env, child, action) {
     if (!located.found.length) {
       const targetSubdomain = workersDevSubdomainFromUrl(target.web_url);
       const looksLegacyUnknown = Boolean(targetSubdomain && currentSubdomain && targetSubdomain !== currentSubdomain);
-      if (looksLegacyUnknown) {
+      if (looksLegacyUnknown || action === "resume") {
         unresolved.push({
           worker_name: target.worker_name,
-          workers_dev_subdomain: targetSubdomain,
-          reason: "legacy_worker_credentials_unavailable"
+          workers_dev_subdomain: targetSubdomain || null,
+          reason: looksLegacyUnknown ? "legacy_worker_credentials_unavailable" : "worker_missing_cannot_resume"
         });
         continue;
       }
