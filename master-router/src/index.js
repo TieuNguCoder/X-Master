@@ -1639,16 +1639,30 @@ async function completeLocalAiResult(env, request) {
   ).bind(accountId).first();
   if (!router) throw Object.assign(new Error("router_slot_missing"), { status: 409 });
 
-  return invokeAccountRouter(env, {
-    ...route,
-    router_slot_id: router.router_slot_id,
-    router_url: router.router_url,
-    router_status: router.router_status
-  }, "/publish", {
-    event_id: eventId,
-    account_id: accountId,
-    output
-  });
+  try {
+    return await invokeAccountRouter(env, {
+      ...route,
+      router_slot_id: router.router_slot_id,
+      router_url: router.router_url,
+      router_status: router.router_status
+    }, "/publish", {
+      event_id: eventId,
+      account_id: accountId,
+      output
+    });
+  } catch (error) {
+    const detail = safeError(error);
+    await env.DB.prepare(
+      "UPDATE ingest_account_routes SET status='failed',error=? WHERE event_id=? AND account_id=?"
+    ).bind(detail, eventId, accountId).run().catch(() => {});
+    await audit(env, "collector", "local", "x_account.router_failed", "x_account", accountId, {
+      event_id: eventId,
+      child_id: route.child_id,
+      router_slot_id: router.router_slot_id,
+      error: detail
+    }).catch(() => {});
+    throw error;
+  }
 }
 
 async function internalRouterHealth(env, request) {
