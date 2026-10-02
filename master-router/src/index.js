@@ -1324,9 +1324,62 @@ async function validateSourceIds(env, sourceIds) {
   return ids;
 }
 
+async function childAiSettings(env, childId, includeSecret = false) {
+  await env.DB.prepare("INSERT OR IGNORE INTO child_settings(child_id) VALUES(?)").bind(childId).run();
+  const row = await env.DB.prepare(
+    "SELECT encrypted_json FROM child_settings WHERE child_id=?"
+  ).bind(childId).first();
+
+  let stored = {};
+  if (row?.encrypted_json) {
+    try {
+      stored = await decryptJson(env.MASTER_KEY, row.encrypted_json);
+    } catch {
+      throw Object.assign(new Error("child_ai_settings_decrypt_failed"), { status: 500 });
+    }
+  }
+
+  const result = {
+    provider: "deepseek_paid",
+    deepseek_configured: Boolean(stored.deepseek_api_key)
+  };
+  if (includeSecret) result.deepseek_api_key = String(stored.deepseek_api_key || "");
+  return result;
+}
+
+async function saveChildAiSettings(env, child, body) {
+  const key = String(body.deepseek_api_key || "").trim();
+  if (key.length < 8) throw Object.assign(new Error("deepseek_api_key_required"), { status: 400 });
+
+  const encrypted = await encryptJson(env.MASTER_KEY, { deepseek_api_key: key });
+  await env.DB.prepare(
+    `INSERT INTO child_settings(child_id,encrypted_json,updated_at)
+     VALUES(?,?,CURRENT_TIMESTAMP)
+     ON CONFLICT(child_id) DO UPDATE SET encrypted_json=excluded.encrypted_json,updated_at=CURRENT_TIMESTAMP`
+  ).bind(child.id, encrypted).run();
+
+  await audit(env, "child", child.id, "child.deepseek_updated", "child", child.id, {
+    provider: "deepseek_paid"
+  });
+  return { provider: "deepseek_paid", deepseek_configured: true };
+}
+
+async function testChildDeepseek(env, child) {
+  const settings = await childAiSettings(env, child.id, true);
+  if (!settings.deepseek_api_key) throw Object.assign(new Error("deepseek_api_key_missing"), { status: 400 });
+  const output = await deepseekRewrite(
+    settings.deepseek_api_key,
+    "X-Master connection test. Confirm the AI connection in one short sentence.",
+    { content_mode: "news", x_premium: 0, post_language: "en-US" }
+  );
+  await audit(env, "child", child.id, "child.deepseek_test_ok", "child", child.id, { output });
+  return { ok: true, provider: "deepseek_paid", output };
+}
+
 async function childMe(env, child) {
   return {
     child: { id: child.id, name: child.name, status: child.status },
+    ai_settings: await childAiSettings(env, child.id),
     source_catalog: await listSources(env),
     router_slots: await listRouterSlots(env, child.id),
     accounts: await listXAccounts(env, child.id),
