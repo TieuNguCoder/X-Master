@@ -1908,10 +1908,11 @@ async function handleApi(request, env, ctx) {
     return json({
       ok: database,
       service: "x-master-router",
-      version: "0.2.6",
+      version: "0.3.0",
       database,
-      architecture: "master-router-child-web",
-      collector_ready: Boolean(env.COLLECTOR_SECRET)
+      architecture: "master-user-web-five-account-routers",
+      collector_ready: Boolean(env.COLLECTOR_SECRET),
+      cloudflare_ready: Boolean(env.CF_ACCOUNT_ID && env.CF_API_TOKEN)
     }, database ? 200 : 503);
   }
 
@@ -1970,8 +1971,8 @@ async function handleApi(request, env, ctx) {
     }
 
     if (path === "/api/admin/children/preflight" && request.method === "POST") {
-      const infra = normalizeInfra(await readJson(request));
-      const checks = await preflightInfra(infra);
+      const childInfra = normalizeChildInfra(await readJson(request));
+      const checks = await preflightInfra(env, childInfra);
       return json({ ok: true, checks });
     }
 
@@ -1982,6 +1983,15 @@ async function handleApi(request, env, ctx) {
 
     if (path === "/api/admin/children" && request.method === "GET") {
       return json({ children: await listChildren(env) });
+    }
+
+    const childRoutersMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/ensure-routers$/);
+    if (childRoutersMatch && request.method === "POST") {
+      const child = await env.DB.prepare("SELECT id,name,slug FROM children WHERE id=?").bind(childRoutersMatch[1]).first();
+      if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
+      const slots = await ensureChildRouterSlots(env, child, new URL(request.url).origin);
+      await audit(env, "admin", admin.id, "child.routers_ensured", "child", child.id, { router_slots: slots.length });
+      return json({ ok: true, router_slots: slots });
     }
 
     const childCodeMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/update-code$/);
@@ -2017,6 +2027,18 @@ async function handleApi(request, env, ctx) {
         "SELECT * FROM audit_logs ORDER BY id DESC LIMIT 200"
       ).all();
       return json({ audit_logs: result.results || [] });
+    }
+  }
+
+  if (path.startsWith("/internal/router/")) {
+    if (path === "/internal/router/health" && request.method === "GET") {
+      return json(await internalRouterHealth(env, request));
+    }
+    if (path === "/internal/router/process" && request.method === "POST") {
+      return json(await internalRouterProcess(env, request));
+    }
+    if (path === "/internal/router/publish" && request.method === "POST") {
+      return json(await internalRouterPublish(env, request));
     }
   }
 
