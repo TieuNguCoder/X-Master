@@ -57,8 +57,8 @@ function renderChildren(){
       ((c.router_slots||[]).length<5?'<button class="ensure-routers secondary" data-id="'+esc(c.id)+'">Tạo đủ 5 Routers</button>':'')+
       '<button class="update-child secondary" data-id="'+esc(c.id)+'">Update User Web</button>'+
       '<button class="reset-pass secondary" data-id="'+esc(c.id)+'">Reset password</button>'+
-      '<button class="toggle-child warn" data-id="'+esc(c.id)+'" data-status="'+esc(c.status)+'">'+(c.status==="paused"?"Resume":"Pause")+'</button>'+
-      '<button class="delete-child danger" data-id="'+esc(c.id)+'">Delete</button></div></div>';
+      '<button class="toggle-child warn" data-id="'+esc(c.id)+'" data-status="'+esc(c.status)+'">'+(c.status==="paused"?"Start Workers":"Stop Workers")+'</button>'+
+      '<button class="delete-child danger" data-id="'+esc(c.id)+'">Delete User + Workers</button></div></div>';
   }).join("")||'<div class="muted">Chưa có Child Web.</div>';
   document.querySelectorAll(".test-gemini").forEach((b)=>b.onclick=()=>testGemini(b.dataset.id));
   document.querySelectorAll(".test-pipeline").forEach((b)=>b.onclick=()=>testPipeline(b.dataset.id));
@@ -133,8 +133,27 @@ async function updateChildCode(id){
   }catch(error){toast("Update Child lỗi: "+error.message);}
 }
 async function resetPassword(id){const password=prompt("Password mới (tối thiểu 8 ký tự):");if(!password)return;try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({password})});toast("Đã đổi password. Session tester cũ đã bị revoke.");}catch(error){toast(error.message);}}
-async function toggleChild(id,status){const next=status==="paused"?"ready":"paused";try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({status:next})});await refresh();}catch(error){toast(error.message);}}
-async function deleteChild(id){if(!confirm("Xóa Child Web này khỏi Cloudflare và X-Master?"))return;try{await api("/api/admin/children/"+encodeURIComponent(id),{method:"DELETE"});await refresh();}catch(error){toast(error.message);}}
+async function toggleChild(id,status){
+  const next=status==="paused"?"ready":"paused";
+  const action=next==="paused"?"DỪNG thật User Web + toàn bộ Router trên Cloudflare?":"BẬT lại User Web + toàn bộ Router trên Cloudflare?";
+  if(!confirm(action))return;
+  try{
+    toast(next==="paused"?"Đang tắt Workers trên Cloudflare...":"Đang bật Workers trên Cloudflare...");
+    await api("/api/admin/children/"+encodeURIComponent(id),{method:"PATCH",body:JSON.stringify({status:next})});
+    toast(next==="paused"?"Workers đã được tắt thật trên Cloudflare.":"Workers đã hoạt động lại trên Cloudflare.");
+    await refresh();
+  }catch(error){toast("Cloudflare Worker lỗi: "+error.message);}
+}
+async function deleteChild(id){
+  if(!confirm("XÓA THẬT User này? Hệ thống sẽ xóa User Web + toàn bộ Router Worker trực tiếp trên Cloudflare, xác minh đã biến mất, rồi mới xóa dữ liệu D1."))return;
+  if(!confirm("Xác nhận lần cuối: thao tác này không thể hoàn tác."))return;
+  try{
+    toast("Đang xóa Workers thật trên Cloudflare và xác minh...");
+    const result=await api("/api/admin/children/"+encodeURIComponent(id),{method:"DELETE"});
+    toast(result.cloudflare_verified?"Đã xóa Worker thật trên Cloudflare + dữ liệu User.":"Delete chưa được xác minh.");
+    await refresh();
+  }catch(error){toast("KHÔNG xóa dữ liệu: "+error.message);}
+}
 async function loadAudit(){
   try{
     const result=await api("/api/admin/audit");
