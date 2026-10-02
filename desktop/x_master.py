@@ -470,6 +470,7 @@ async def run_collector():
                     "event_id": event_id,
                     "account_id": account_id,
                     "text": str(job.get("text") or ""),
+                    "assets": job.get("assets") or [],
                 },
             )
         except Exception as exc:
@@ -558,9 +559,42 @@ async def run_collector():
             text = event.raw_text or ""
             media = []
             if event.message.media:
-                media.append({"kind": type(event.message.media).__name__})
+                file_info = getattr(event.message, "file", None)
+                mime_type = str(getattr(file_info, "mime_type", "") or "")
+                file_name = str(getattr(file_info, "name", "") or "")
+                media_type_name = type(event.message.media).__name__
+                is_image = mime_type.startswith("image/") or media_type_name == "MessageMediaPhoto"
 
-            log(f"CAPTURED chat={label} msg={event.message.id} text={len(text)} media={len(media)}")
+                if is_image:
+                    try:
+                        raw = await event.message.download_media(file=bytes)
+                        if raw:
+                            if len(raw) <= 10 * 1024 * 1024:
+                                if not mime_type:
+                                    mime_type = "image/jpeg"
+                                if not file_name:
+                                    file_name = f"telegram-{event.message.id}.jpg"
+                                media.append({
+                                    "kind": "image",
+                                    "mime_type": mime_type,
+                                    "filename": file_name,
+                                    "bytes": len(raw),
+                                    "data_base64": base64.b64encode(raw).decode("ascii"),
+                                })
+                            else:
+                                log(
+                                    f"MEDIA skipped too_large chat={label} msg={event.message.id} "
+                                    f"bytes={len(raw)} limit=10485760"
+                                )
+                    except Exception as exc:
+                        log(f"MEDIA download failed chat={label} msg={event.message.id} error={exc}")
+                else:
+                    log(
+                        f"MEDIA unsupported chat={label} msg={event.message.id} "
+                        f"type={media_type_name} mime={mime_type or '-'}"
+                    )
+
+            log(f"CAPTURED chat={label} msg={event.message.id} text={len(text)} images={len(media)}")
 
             body = {
                 "source": {"channel_id": chat_id, "username": username},
@@ -575,7 +609,7 @@ async def run_collector():
                 "POST",
                 body,
                 {"x-collector-secret": collector_secret},
-                30,
+                90,
             )
             if status in (200, 202):
                 routed_accounts = payload.get("routed_accounts")
