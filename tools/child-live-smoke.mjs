@@ -13,14 +13,17 @@ assert.equal(r.status, 200);
 const html = await r.text();
 assert.ok(html.includes("Nhập mật khẩu"));
 assert.ok(html.includes("Thêm tài khoản X"));
-assert.ok(html.includes("Gemini Free")); 
-assert.ok(html.includes("Gemini Paid")); 
-assert.ok(html.includes("DeepSeek Paid"));
+assert.ok(html.includes("DeepSeek dùng chung cho User Web"));
+assert.ok(html.includes("Lưu DeepSeek"));
+assert.ok(html.includes("Test DeepSeek"));
+assert.ok(!html.includes("Gemini Free"));
+assert.ok(!html.includes("Gemini Paid"));
 assert.ok(html.includes("Buffer API Key"));
 assert.ok(html.includes("Ngôn ngữ bài đăng"));
 assert.ok(html.includes("English (US) — mặc định"));
 assert.ok(html.includes("Custom language / BCP-47"));
 assert.ok(html.includes("Kênh Telegram cho tài khoản này"));
+assert.ok(html.includes("News + Airdrop (tự nhận diện)"));
 
 r = await fetch(root + "/api/login", {
   method: "POST",
@@ -36,11 +39,31 @@ r = await fetch(root + "/api/me", { headers: { cookie } });
 assert.equal(r.status, 200);
 body = await r.json();
 assert.equal(body.child.name, "Tester Smoke");
+assert.equal(body.ai_settings.provider, "deepseek_paid");
+assert.equal(body.ai_settings.deepseek_configured, false);
 assert.equal(body.source_catalog.length, 2);
 assert.equal(body.accounts.length, 0);
 assert.equal(body.router_slots.length, 5);
 assert.equal(body.limits.max_accounts, 5);
 assert.equal(body.limits.router_slots, 5);
+
+r = await fetch(root + "/api/settings/ai", {
+  method: "POST",
+  headers: { cookie, "content-type": "application/json" },
+  body: JSON.stringify({ deepseek_api_key: "deepseek-global-smoke" })
+});
+assert.equal(r.status, 200);
+body = await r.json();
+assert.equal(body.deepseek_configured, true);
+
+r = await fetch(root + "/api/settings/ai/test", {
+  method: "POST",
+  headers: { cookie, "content-type": "application/json" },
+  body: "{}"
+});
+assert.equal(r.status, 200);
+body = await r.json();
+assert.equal(body.provider, "deepseek_paid");
 
 r = await fetch(root + "/api/buffer/channels", {
   method: "POST",
@@ -51,19 +74,20 @@ assert.equal(r.status, 200);
 body = await r.json();
 assert.equal(body.channels.length, 1);
 assert.equal(body.channels[0].id, "buffer-channel-1");
+assert.equal(body.channels[0].display_name, "Holly Display");
+assert.equal(body.channels[0].x_handle, "holly");
 
 r = await fetch(root + "/api/accounts", {
   method: "POST",
   headers: { cookie, "content-type": "application/json" },
   body: JSON.stringify({
-    display_name: "Holly",
+    display_name: "Holly Display",
     x_handle: "@holly",
-    ai_provider: "gemini_free",
-    ai_api_key: "gemini-smoke",
     buffer_api_key: "buffer-smoke",
     buffer_channel_id: "buffer-channel-1",
+    buffer_channel_name: "Holly Display",
     post_language: "en-US",
-    content_mode: "news",
+    content_mode: "both",
     x_premium: false,
     enabled: true,
     source_ids: ["src_smoke"]
@@ -71,9 +95,10 @@ r = await fetch(root + "/api/accounts", {
 });
 assert.equal(r.status, 201);
 body = await r.json();
-assert.equal(body.account.display_name, "Holly");
-assert.equal(body.account.ai_provider, "gemini_free");
+assert.equal(body.account.display_name, "Holly Display");
+assert.equal(body.account.ai_provider, "deepseek_paid");
 assert.equal(body.account.ai_configured, true);
+assert.equal(body.account.content_mode, "both");
 assert.equal(body.account.post_language, "en-US");
 assert.equal(body.account.router_slot_index, 1);
 assert.equal(body.account.router_status, "assigned");
@@ -97,9 +122,8 @@ r = await fetch(root + "/api/accounts/" + createdAccountId, {
   body: JSON.stringify({
     display_name: "Holly Updated",
     x_handle: "holly2",
-    ai_provider: "deepseek_paid",
-    ai_api_key: "deepseek-smoke",
     buffer_channel_id: "buffer-channel-2",
+    buffer_channel_name: "Holly Updated",
     post_language: "vi-VN",
     content_mode: "airdrop",
     x_premium: true,
