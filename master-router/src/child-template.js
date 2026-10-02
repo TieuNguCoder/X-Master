@@ -135,7 +135,7 @@ button{border:0;border-radius:10px;padding:11px 14px;background:#4f7fd4;color:#f
 <script>
 const $=s=>document.querySelector(s);
 const esc=v=>String(v??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
-let state={child:null,source_catalog:[],accounts:[],limits:{max_accounts:5}};
+let state={child:null,source_catalog:[],accounts:[],router_slots:[],limits:{max_accounts:5,router_slots:5}};
 let editingId=null;
 
 function showLogin(message=""){
@@ -203,12 +203,15 @@ function updateAiUi(){
 }
 function renderAccounts(){
   const max=Number(state.limits?.max_accounts||5);
-  $("#limitText").textContent="Đang dùng "+state.accounts.length+"/"+max+" tài khoản";
+  const routers=state.router_slots||[];
+  const readyRouters=routers.filter(r=>r.status==="ready"||r.status==="assigned").length;
+  $("#limitText").textContent="X accounts "+state.accounts.length+"/"+max+" · Routers "+readyRouters+"/"+Number(state.limits?.router_slots||5);
   $("#accounts").innerHTML=(state.accounts||[]).map(a=>{
     const chips=(a.sources||[]).map(s=>'<span class="chip">'+esc(s.title)+'</span>').join("");
     return '<div class="account"><div class="account-head"><div><h3>'+esc(a.display_name)+'</h3><div class="muted">'+(a.x_handle?'@'+esc(a.x_handle):'Chưa ghi X username')+'</div></div><span class="badge '+(a.enabled?'':'off')+'">'+(a.enabled?'RUNNING':'PAUSED')+'</span></div>'+
       '<div class="chips">'+(chips||'<span class="muted">Chưa chọn kênh</span>')+'</div>'+
-      '<div class="muted" style="margin-top:8px">AI: '+esc(aiProviderLabel(a.ai_provider))+' · '+(a.ai_configured?'configured':'chưa có key')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
+      '<div class="muted" style="margin-top:8px">Router: '+(a.router_slot_index?'R'+esc(a.router_slot_index)+' · '+esc(a.router_status||'missing'):'MISSING')+' · '+esc(a.router_worker_name||'-')+'</div>'+
+      '<div class="muted" style="margin-top:5px">AI: '+esc(aiProviderLabel(a.ai_provider))+' · '+(a.ai_configured?'configured':'chưa có key')+' · Buffer: '+(a.buffer_configured?'configured':'chưa có')+' · Channel ID: '+esc(a.buffer_channel_id||'-')+'</div>'+
       '<div class="muted" style="margin-top:5px">Format: '+(a.content_mode==="airdrop"?"Airdrop":"News")+' · X: '+(a.x_premium?"Premium / Blue":"Standard")+' · Language: '+esc(languageLabel(a.post_language||"en-US"))+'</div>'+
       '<div class="muted" style="margin-top:6px">Bài gần nhất: '+esc(a.last_post_status||'chưa có')+(a.last_post_at?' · '+esc(a.last_post_at):'')+(a.last_post_error?' · '+esc(a.last_post_error):'')+'</div>'+
       '<div class="actions"><button class="test secondary" data-id="'+esc(a.id)+'">Test đăng X</button><button class="edit secondary" data-id="'+esc(a.id)+'">Sửa</button><button class="del danger" data-id="'+esc(a.id)+'">Xóa</button></div></div>';
