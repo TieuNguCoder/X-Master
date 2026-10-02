@@ -6,8 +6,9 @@ const js = readFileSync(new URL("../web/app.js", import.meta.url), "utf8");
 const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
 const routerSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
 const childTemplate = readFileSync(new URL("../src/child-template.js", import.meta.url), "utf8");
+const accountRouterTemplate = readFileSync(new URL("../src/account-router-template.js", import.meta.url), "utf8");
 
-for (const label of ["Child Webs", "Telegram Catalog", "Logs", "Cloudflare", "Cloudinary"]) {
+for (const label of ["User Webs", "Telegram Catalog", "Logs", "Cloudflare", "Cloudinary"]) {
   assert.ok(html.includes(label), "Master UI missing " + label);
 }
 assert.ok(js.includes("/api/admin/children/preflight"));
@@ -20,7 +21,7 @@ assert.ok(!html.includes("Thêm Telegram Source"), "manual Source form must be r
 
 for (const table of [
   "sources","children","child_infra","admin_sessions","child_sessions","deployment_jobs","audit_logs",
-  "x_accounts","x_account_sources","ingest_events","ingest_account_routes"
+  "x_accounts","child_router_slots","x_account_sources","ingest_events","ingest_account_routes"
 ]) {
   assert.ok(schema.includes("CREATE TABLE IF NOT EXISTS " + table), "schema missing " + table);
 }
@@ -40,6 +41,13 @@ assert.ok(routerSource.includes("TARGET LANGUAGE:"));
 assert.ok(routerSource.includes("post_language"));
 assert.ok(routerSource.includes("/collector/local-ai-result"));
 assert.ok(routerSource.includes("/update-code"));
+assert.ok(routerSource.includes("CF_ACCOUNT_ID"));
+assert.ok(routerSource.includes("CF_API_TOKEN"));
+assert.ok(routerSource.includes("ensureChildRouterSlots"));
+assert.ok(routerSource.includes("deployAccountRouterWorker"));
+assert.ok(routerSource.includes("/internal/router/process"));
+assert.ok(routerSource.includes("/internal/router/publish"));
+assert.ok(routerSource.includes("router_slot_unavailable"));
 assert.ok(routerSource.includes('routed_accounts'));
 assert.ok(routerSource.includes("gemini-3.5-flash"));
 assert.ok(routerSource.includes(":generateContent"));
@@ -64,5 +72,11 @@ assert.ok(childTemplate.includes("ai_provider"));
 assert.ok(childTemplate.includes("Test đăng X"));
 assert.ok(childTemplate.includes("/test-post"));
 assert.ok(childTemplate.includes("source_catalog"));
+assert.ok(childTemplate.includes("router_slots"));
+assert.ok(childTemplate.includes("router_slot_index"));
+assert.ok(accountRouterTemplate.includes("ROUTER_SLOT_ID"));
+assert.ok(accountRouterTemplate.includes("x-master-router-secret"));
+assert.ok(accountRouterTemplate.includes("/internal/router/process"));
+assert.ok(accountRouterTemplate.includes("/internal/router/publish"));
 
 console.log("contract.test: PASS");
