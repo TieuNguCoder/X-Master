@@ -2453,6 +2453,7 @@ export const __test = {
   deployChildWorker,
   accountRouterWorkerName,
   deployAccountRouterWorker,
+  cloudflareUsageSummary,
   cloudflareWorkerProbe,
   setCloudflareWorkerEnabled,
   deleteCloudflareWorkerVerified,
