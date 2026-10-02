@@ -759,49 +759,53 @@ function xWeightedLength(text) {
 }
 
 function fitStandardX(text, maxWeight = 270) {
-  let result = String(text || "").trim();
-  if (xWeightedLength(result) <= maxWeight) return result;
+  let original = String(text || "").trim();
+  if (xWeightedLength(original) <= maxWeight) return original;
 
-  const tagMatch = result.match(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu);
-  let tags = tagMatch?.[0]?.trim().split(/\s+/).filter(Boolean) || [];
-  if (tags.length > 2) tags = tags.slice(0, 2);
+  const tagMatch = original.match(/(?:\s*#[\p{L}\p{N}_]+)+\s*$/gu);
+  let tags = tagMatch?.[0]?.trim().split(/\s+/).filter(Boolean).slice(0, 2) || [];
+  let urls = [...new Set(extractSourceUrls(original))];
 
-  const urls = [...new Set(extractSourceUrls(result))];
-  let body = tagMatch ? result.slice(0, tagMatch.index).trim() : result;
+  let body = tagMatch ? original.slice(0, tagMatch.index).trim() : original;
   for (const url of urls) body = body.replaceAll("🔗 " + url, "").replaceAll(url, "");
   body = body.replace(/\n{3,}/g, "\n\n").trim();
 
-  const suffixParts = [];
-  if (urls.length) suffixParts.push(urls.map((url) => "🔗 " + url).join("\n"));
-  if (tags.length) suffixParts.push(tags.join(" "));
-  const suffix = suffixParts.join("\n\n");
+  const compose = (bodyText, currentUrls, currentTags) => {
+    const suffixParts = [];
+    if (currentUrls.length) suffixParts.push(currentUrls.map((url) => "🔗 " + url).join("\n"));
+    if (currentTags.length) suffixParts.push(currentTags.join(" "));
+    const suffix = suffixParts.join("\n\n");
+    return bodyText + (suffix ? (bodyText ? "\n\n" : "") + suffix : "");
+  };
+
+  while (xWeightedLength(compose("", urls, tags)) > maxWeight && tags.length) tags.pop();
+  while (xWeightedLength(compose("", urls, tags)) > maxWeight && urls.length > 1) urls.pop();
 
   const chars = [...body];
-  while (chars.length && xWeightedLength(chars.join("") + (suffix ? "\n\n" + suffix : "")) > maxWeight) {
-    chars.pop();
-  }
+  while (chars.length && xWeightedLength(compose(chars.join(""), urls, tags)) > maxWeight) chars.pop();
+
   let compact = chars.join("").trimEnd();
   if (compact && compact.length < body.length) {
     const lastSpace = compact.lastIndexOf(" ");
     if (lastSpace > compact.length * 0.75) compact = compact.slice(0, lastSpace);
-    compact = compact.replace(/[,:;\-–—]+$/u, "").trimEnd() + "…";
+    compact = compact.replace(/[,:;\-–—]+$/u, "").trimEnd();
+    if (compact) compact += "…";
   }
 
-  result = compact + (suffix ? (compact ? "\n\n" : "") + suffix : "");
+  let result = compose(compact, urls, tags);
   while (result && xWeightedLength(result) > maxWeight) {
-    if (tags.length > 1) {
+    if (tags.length) {
       tags.pop();
-      const parts = [];
-      if (urls.length) parts.push(urls.map((url) => "🔗 " + url).join("\n"));
-      if (tags.length) parts.push(tags.join(" "));
-      result = compact + (parts.length ? (compact ? "\n\n" : "") + parts.join("\n\n") : "");
+    } else if (compact) {
+      const bodyChars = [...compact];
+      bodyChars.pop();
+      compact = bodyChars.join("").trimEnd();
+    } else if (urls.length > 1) {
+      urls.pop();
     } else {
-      const compactChars = [...compact];
-      if (!compactChars.length) break;
-      compactChars.pop();
-      compact = compactChars.join("").trimEnd();
-      result = compact + (suffix ? (compact ? "\n\n" : "") + suffix : "");
+      break;
     }
+    result = compose(compact, urls, tags);
   }
   return result.trim();
 }
