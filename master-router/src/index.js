@@ -11,6 +11,7 @@ import {
 } from "./security.js";
 import { renderChildWorkerSource } from "./child-template.js";
 import { renderAccountRouterSource } from "./account-router-template.js";
+import { childLifecycle } from "./child-lifecycle.js";
 
 const ADMIN_COOKIE = "xm_admin";
 const CHILD_COOKIE = "xm_child";
@@ -162,6 +163,7 @@ function masterCloudflareInfra(env) {
 async function cloudflareRequest(infra, path, init = {}) {
   const response = await fetch("https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id + path, {
     ...init,
+    signal: init.signal || AbortSignal.timeout(20000),
     headers: {
       Authorization: "Bearer " + infra.cloudflare_api_token,
       ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }),
@@ -173,9 +175,21 @@ async function cloudflareRequest(infra, path, init = {}) {
   try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
   if (!response.ok || body.success === false) {
     const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
-    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
+    throw Object.assign(new Error("cloudflare:" + detail), {
+      status: 502, expose: true, cloudflareStatus: response.status,
+      cloudflareCodes: (body.errors || []).map(e => Number(e.code))
+    });
   }
   return body;
+}
+
+const childWorkers = childLifecycle(cloudflareRequest, masterCloudflareInfra, audit);
+
+async function assertPostingEnabled(env, accountId) {
+  const active = await env.DB.prepare(
+    "SELECT a.id FROM x_accounts a JOIN children c ON c.id=a.child_id WHERE a.id=? AND a.enabled=1 AND c.status='ready'"
+  ).bind(accountId).first();
+  if (!active) throw Object.assign(new Error("x_account_or_child_paused"), { status: 409 });
 }
 
 async function bufferGraphql(apiKey, query) {
@@ -546,6 +560,7 @@ async function bufferCreateNow(apiKey, channelId, text) {
 
 async function processAccountRoute(env, eventId, account, sourceText) {
   try {
+    await assertPostingEnabled(env, account.id);
     let secrets = {};
     if (account.encrypted_json) {
       secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
@@ -553,6 +568,7 @@ async function processAccountRoute(env, eventId, account, sourceText) {
     const provider = accountAiProvider(secrets);
     const accountWithLanguage = { ...account, post_language: accountPostLanguage(secrets) };
     const rewritten = await rewriteWithProvider(provider, secrets, sourceText, accountWithLanguage);
+    await assertPostingEnabled(env, account.id);
     const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, rewritten);
 
     await env.DB.prepare(
@@ -606,9 +622,9 @@ async function preflightInfra(env, childInfra) {
   return checks;
 }
 
-async function ensureWorkersSubdomain(infra) {
+async function ensureWorkersSubdomain(infra, requestCF = cloudflareRequest) {
   try {
-    const current = await cloudflareRequest(infra, "/workers/subdomain");
+    const current = await requestCF(infra, "/workers/subdomain");
     if (current?.result?.subdomain) return current.result.subdomain;
   } catch {
     // A new Cloudflare account may not have a workers.dev subdomain yet.
@@ -619,7 +635,7 @@ async function ensureWorkersSubdomain(infra) {
   for (let i = 0; i < 5; i++) {
     const candidate = "xmaster-" + tail + (i ? "-" + i : "");
     try {
-      const created = await cloudflareRequest(infra, "/workers/subdomain", {
+      const created = await requestCF(infra, "/workers/subdomain", {
         method: "PUT",
         body: JSON.stringify({ subdomain: candidate })
       });
@@ -675,10 +691,10 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
     throw error;
   }
 }
-async function deleteChildWorker(infra, workerName, bestEffort = false) {
+async function deleteChildWorker(infra, workerName, bestEffort = false, requestCF = cloudflareRequest) {
   if (!workerName) return;
   try {
-    await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), { method: "DELETE" });
+    await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), { method: "DELETE" });
   } catch (error) {
     if (!bestEffort) throw error;
   }
@@ -689,10 +705,10 @@ function accountRouterWorkerName(child, slotIndex) {
   return ("xmr-" + base + "-r" + slotIndex + "-" + child.id.slice(-5)).slice(0, 62);
 }
 
-async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot, deleteOnFailure = true) {
+async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot, deleteOnFailure = true, existingWorkerName = null, requestCF = cloudflareRequest) {
   const infra = masterCloudflareInfra(env);
   const source = renderAccountRouterSource();
-  const workerName = accountRouterWorkerName(child, slotIndex);
+  const workerName = existingWorkerName || accountRouterWorkerName(child, slotIndex);
   const metadata = {
     main_module: "worker.js",
     compatibility_date: "2026-09-18",
@@ -701,7 +717,7 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
       { type: "secret_text", name: "ROUTER_SECRET", text: routerSecret },
-      { type: "service", name: "MASTER", service: "x-master-router" }
+      { type: "service", name: "MASTER", service: env.CF_MASTER_WORKER || "x-master-router" }
     ]
   };
 
@@ -709,16 +725,16 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
   form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
 
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
     method: "PUT",
     body: form
   });
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
     method: "POST",
     body: JSON.stringify({ enabled: true })
   });
 
-  const subdomain = await ensureWorkersSubdomain(infra);
+  const subdomain = await ensureWorkersSubdomain(infra, requestCF);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
 
   return { workerName, webUrl };
@@ -735,13 +751,14 @@ async function listRouterSlots(env, childId) {
   }));
 }
 
-async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = false) {
+async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = false, requestCF = cloudflareRequest) {
   const existing = await listRouterSlots(env, child.id);
   const byIndex = new Map(existing.map((row) => [Number(row.slot_index), row]));
   const created = [];
 
   try {
     for (let slotIndex = 1; slotIndex <= 5; slotIndex++) {
+      await requestCF.assertLease?.();
       const current = byIndex.get(slotIndex);
       if (!forceUpdate && current && current.web_url && (current.status === "ready" || current.status === "assigned")) continue;
 
@@ -771,9 +788,10 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
       let deployed;
       try {
         deployed = await deployAccountRouterWorker(
-          env, child, slotId, slotIndex, routerSecret, masterRoot, !current
+          env, child, slotId, slotIndex, routerSecret, masterRoot, !current, current?.worker_name, requestCF
         );
       } catch (error) {
+        await requestCF.assertLease?.();
         if (current) {
           await env.DB.prepare(
             "UPDATE child_router_slots SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
@@ -785,6 +803,7 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
         }
         throw error;
       }
+      await requestCF.assertLease?.();
       await env.DB.prepare(
         `UPDATE child_router_slots
             SET worker_name=?,web_url=?,status=CASE WHEN account_id IS NULL THEN 'ready' ELSE 'assigned' END,
@@ -794,10 +813,12 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
       created.push({ id: slotId, worker_name: deployed.workerName, was_existing: Boolean(current) });
     }
   } catch (error) {
+    await requestCF.assertLease?.();
     const infra = masterCloudflareInfra(env);
     for (const item of created) {
       if (item.was_existing) continue;
-      await deleteChildWorker(infra, item.worker_name, true);
+      await deleteChildWorker(infra, item.worker_name, true, requestCF);
+      await requestCF.assertLease?.();
       await env.DB.prepare("DELETE FROM child_router_slots WHERE id=?").bind(item.id).run().catch(() => {});
     }
     throw error;
@@ -816,6 +837,7 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
   const pendingAccounts = unboundAccounts.results || [];
   const availableSlots = freeSlots.results || [];
   for (let i = 0; i < Math.min(pendingAccounts.length, availableSlots.length); i++) {
+    await requestCF.assertLease?.();
     await env.DB.prepare(
       "UPDATE child_router_slots SET account_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=? AND account_id IS NULL"
     ).bind(pendingAccounts[i].id, availableSlots[i].id).run();
@@ -973,6 +995,8 @@ async function listXAccounts(env, childId) {
 async function listChildren(env) {
   const result = await env.DB.prepare(
     `SELECT c.id,c.name,c.slug,c.status,c.worker_name,c.web_url,c.last_health_at,c.last_error,c.created_at,c.updated_at,
+       (SELECT verified_status FROM child_lifecycle l WHERE l.child_id=c.id) AS cloudflare_verified_status,
+       (SELECT action FROM child_lifecycle l WHERE l.child_id=c.id AND l.operation_id IS NOT NULL AND datetime(l.lease_expires_at)>CURRENT_TIMESTAMP) AS lifecycle_action,
        (SELECT COUNT(*) FROM x_accounts a WHERE a.child_id=c.id) AS account_count,
        (SELECT COUNT(DISTINCT xs.source_id)
           FROM x_accounts a JOIN x_account_sources xs ON xs.account_id=a.id
@@ -1320,14 +1344,18 @@ async function updateChild(env, request, admin, childId) {
   }
 
   if (body.status === "ready" || body.status === "paused") {
-    await env.DB.prepare("UPDATE children SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.status, childId).run();
-    await audit(env, "admin", admin.id, "child.status_changed", "child", childId, { status: body.status });
+    const result = await childWorkers.changeStatus(env, admin, childId, body.status);
+    return { ...result, child: await env.DB.prepare("SELECT id,name,slug,status,web_url,worker_name FROM children WHERE id=?").bind(childId).first() };
   }
 
   return { child: await env.DB.prepare("SELECT id,name,slug,status,web_url,worker_name FROM children WHERE id=?").bind(childId).first() };
 }
 
 async function updateChildWorkerCode(env, request, admin, childId) {
+  return childWorkers.withDeployment(env, admin, childId, "update", requestCF => updateChildWorkerCodeUnlocked(env, request, admin, childId, requestCF));
+}
+
+async function updateChildWorkerCodeUnlocked(env, request, admin, childId, requestCF) {
   const child = await env.DB.prepare(
     "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
   ).bind(childId).first();
@@ -1335,7 +1363,11 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   if (!child.encrypted_json) throw Object.assign(new Error("child_infra_missing"), { status: 409 });
 
   const stored = await decryptJson(env.MASTER_KEY, child.encrypted_json);
-  const infra = masterCloudflareInfra(env);
+  const masterInfra = masterCloudflareInfra(env);
+  const infra = stored.cloudflare_account_id && stored.cloudflare_api_token ? {
+    cloudflare_account_id: stored.cloudflare_account_id,
+    cloudflare_api_token: stored.cloudflare_api_token
+  } : masterInfra;
   const childInfra = {
     cloudinary_cloud_name: stored.cloudinary_cloud_name,
     cloudinary_api_key: stored.cloudinary_api_key,
@@ -1352,68 +1384,50 @@ async function updateChildWorkerCode(env, request, admin, childId) {
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
       { type: "secret_text", name: "CHILD_SECRET", text: childSecret },
-      { type: "service", name: "MASTER", service: "x-master-router" }
+      ...(infra.cloudflare_account_id === masterInfra.cloudflare_account_id
+        ? [{ type: "service", name: "MASTER", service: env.CF_MASTER_WORKER || "x-master-router" }]
+        : [])
     ]
   };
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
   form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
 
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
     method: "PUT",
     body: form
   });
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
     method: "POST",
     body: JSON.stringify({ enabled: true })
   });
 
-  const subdomain = await ensureWorkersSubdomain(infra);
+  const subdomain = await ensureWorkersSubdomain(infra, requestCF);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
   const secretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
-  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...childInfra, child_secret: childSecret });
+  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...stored, ...childInfra, child_secret: childSecret });
 
+  await requestCF.assertLease();
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE children SET child_secret_hash=?,worker_name=?,web_url=?,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+      "UPDATE children SET child_secret_hash=?,worker_name=?,web_url=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(secretHash, workerName, webUrl, childId),
     env.DB.prepare(
       "UPDATE child_infra SET encrypted_json=?,updated_at=CURRENT_TIMESTAMP WHERE child_id=?"
     ).bind(updatedInfra, childId)
   ]);
 
-  await env.DB.prepare(
-    "UPDATE children SET status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
-  ).bind(childId).run();
-  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot, true);
+  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot, true, requestCF);
   await audit(env, "admin", admin.id, "child.code_updated", "child", childId, {
     worker_name: workerName,
     web_url: webUrl,
     router_slots: routerSlots.length
   });
-  return { updated: true, child: { id: childId, name: child.name, status: "ready", worker_name: workerName, web_url: webUrl, router_slots: routerSlots } };
+  return { updated: true, child: { id: childId, name: child.name, status: child.status, worker_name: workerName, web_url: webUrl, router_slots: routerSlots } };
 }
 
 async function deleteChild(env, admin, childId) {
-  const child = await env.DB.prepare(
-    "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
-  ).bind(childId).first();
-  if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
-
-  const infra = masterCloudflareInfra(env);
-  const slots = await listRouterSlots(env, childId);
-  for (const slot of slots) {
-    if (slot.worker_name) await deleteChildWorker(infra, slot.worker_name, true);
-  }
-  if (child.worker_name) await deleteChildWorker(infra, child.worker_name);
-
-  await audit(env, "admin", admin.id, "child.deleted", "child", childId, {
-    name: child.name,
-    worker_name: child.worker_name,
-    router_workers_deleted: slots.length
-  });
-  await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run();
-  return { deleted: true };
+  return childWorkers.remove(env, admin, childId);
 }
 
 async function loadAccountSecrets(env, accountId) {
@@ -1451,6 +1465,7 @@ async function adminTestGemini(env, admin, accountId) {
 
 async function adminTestFullPipeline(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
+  await assertPostingEnabled(env, accountId);
   const provider = accountAiProvider(secrets);
   if (provider === "gemini_free") {
     throw Object.assign(new Error("gemini_free_runs_on_collector_test_with_a_real_telegram_post"), { status: 409 });
@@ -1461,6 +1476,7 @@ async function adminTestFullPipeline(env, admin, accountId) {
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
     { ...account, post_language: accountPostLanguage(secrets) }
   );
+  await assertPostingEnabled(env, accountId);
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
     child_id: account.child_id,
@@ -1476,6 +1492,7 @@ async function adminTestXAccount(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
 
   const text = "X-Master connection test " + new Date().toISOString();
+  await assertPostingEnabled(env, accountId);
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
   await audit(env, "admin", admin.id, "x_account.test_posted", "x_account", account.id, {
     buffer_post_id: post.id,
@@ -1600,6 +1617,7 @@ async function internalRouterProcess(env, request) {
     throw Object.assign(new Error("router_account_mismatch"), { status: 409 });
   }
 
+  await assertPostingEnabled(env, accountId);
   const claim = await claimRoute(env, eventId, accountId, "router_pending", "processing");
   if (claim.already_posted) return { posted: true, duplicate: true };
 
@@ -1632,6 +1650,7 @@ async function internalRouterPublish(env, request) {
     throw Object.assign(new Error("router_publish_payload_invalid"), { status: 400 });
   }
 
+  await assertPostingEnabled(env, accountId);
   const claim = await claimRoute(env, eventId, accountId, "local_ai_pending", "publishing");
   if (claim.already_posted) return { posted: true, duplicate: true };
 
@@ -1649,6 +1668,7 @@ async function internalRouterPublish(env, request) {
   if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
 
   try {
+    await assertPostingEnabled(env, accountId);
     const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
     await env.DB.prepare(
       "UPDATE ingest_account_routes SET status='posted',error=NULL WHERE event_id=? AND account_id=?"
@@ -2000,13 +2020,19 @@ async function handleApi(request, env, ctx) {
       return json({ children: await listChildren(env) });
     }
 
+    const childCloudflareMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/cloudflare-status$/);
+    if (childCloudflareMatch && request.method === "GET") {
+      return json(await childWorkers.inspect(env, childCloudflareMatch[1]));
+    }
+
     const childRoutersMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/ensure-routers$/);
     if (childRoutersMatch && request.method === "POST") {
-      const child = await env.DB.prepare("SELECT id,name,slug FROM children WHERE id=?").bind(childRoutersMatch[1]).first();
-      if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
-      const slots = await ensureChildRouterSlots(env, child, new URL(request.url).origin);
-      await audit(env, "admin", admin.id, "child.routers_ensured", "child", child.id, { router_slots: slots.length });
-      return json({ ok: true, router_slots: slots });
+      return json(await childWorkers.withDeployment(env, admin, childRoutersMatch[1], "ensure_routers", async requestCF => {
+        const child = await env.DB.prepare("SELECT id,name,slug FROM children WHERE id=?").bind(childRoutersMatch[1]).first();
+        const slots = await ensureChildRouterSlots(env, child, new URL(request.url).origin, false, requestCF);
+        await audit(env, "admin", admin.id, "child.routers_ensured", "child", child.id, { router_slots: slots.length });
+        return { ok: true, router_slots: slots };
+      }));
     }
 
     const childCodeMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/update-code$/);
@@ -2064,7 +2090,7 @@ async function handleApi(request, env, ctx) {
       return json({ ok: true, child_id: child.id, status: child.status });
     }
 
-    if (child.status === "paused") throw Object.assign(new Error("child_paused"), { status: 403 });
+    if (child.status !== "ready") throw Object.assign(new Error(child.status === "paused" ? "child_paused" : "child_not_ready:" + child.status), { status: 403 });
 
     if (path === "/internal/child/login" && request.method === "POST") {
       const body = await readJson(request);
@@ -2117,7 +2143,15 @@ export const __test = {
   cleanAiOutput,
   geminiRewrite,
   deepseekRewrite,
-  bufferCreateNow
+  bufferCreateNow,
+  cloudflareRequest,
+  childWorkers,
+  processAccountRoute,
+  adminTestFullPipeline,
+  adminTestXAccount,
+  internalRouterProcess,
+  internalRouterPublish,
+  updateChildWorkerCode
 };
 
 export default {

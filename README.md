@@ -54,6 +54,19 @@ The five account routers and the User Web are created under the **same Cloudflar
 
 ## User Web
 
+### Stop, resume and delete Workers
+
+- **Dừng Worker** blocks new posting first, then disables `workers.dev`, Preview URLs and Cron schedules on the User Web and its account routers through the Cloudflare API. Each change is read back and verified. Private settings and credentials are retained for Resume.
+- **Resume** restores the saved trigger configuration. A missing Worker or an unverified Cloudflare response keeps the User paused and shows the error. Updating code or repairing routers preserves the User's paused state and existing Worker names.
+- **Kiểm tra Cloudflare** reads the actual script, trigger and account state, including old records whose scripts no longer exist. The UI distinguishes inherited posting pauses from the last verified Cloudflare operation.
+- **Xóa Worker + dữ liệu** checks ownership of the entire group before deletion, deletes every managed script, and requires a confirmed missing-script response afterwards. Only then does one D1 transaction remove the User and its private infrastructure/settings, X accounts, router secrets, Source links, sessions and account routes. Shared Telegram catalog/events and other Users remain available; audit history is retained.
+- If deletion fails partway through, the User stays paused with its credentials and error available for retry. Missing scripts are accepted only for Cloudflare's specific HTTP 404/code 10007 response after verifying the account against its `workers.dev` URL. Permission errors, timeouts and generic 404s cannot silently remove the User record.
+- Older User Webs keep using their original encrypted Cloudflare credentials when present. Their account routers use Master's account. Updating an old User Web preserves its URL/account instead of leaving an orphan script in the previous account.
+
+Apply the updated `master-router/schema.sql` before deploying this version; `SETUP-MASTER.ps1` already applies it on every deployment. The new `child_lifecycle` table is additive. A durable lease serializes stop/resume/delete/update/repair for each User and keeps trigger snapshots across retries.
+
+Stopping blocks new Buffer requests after the posting-state check. Requests already accepted by Buffer cannot be recalled by stopping a Worker. Cloudflare trigger changes can take time to propagate, so authenticated Master posting checks also reject paused Users.
+
 Each User Web supports up to five X accounts. Every X account keeps its own:
 
 - Buffer account/API key and X channel;
@@ -254,4 +267,3 @@ CI currently covers:
 - live generated Child Web login/session/settings;
 - Windows EXE self-test;
 - ZIP extract/integrity check.
-
