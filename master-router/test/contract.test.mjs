@@ -17,6 +17,11 @@ assert.ok(js.includes("Test AI"));
 assert.ok(js.includes("Test full pipeline"));
 assert.ok(js.includes("details_json"));
 assert.ok(html.includes("Copy URL + Password"));
+assert.ok(html.includes("Tạo User Web + 5 Router"));
+assert.ok(!html.includes('id="cfAccount"'), "per-User Cloudflare Account ID must be removed");
+assert.ok(!html.includes('id="cfToken"'), "per-User Cloudflare token must be removed");
+assert.ok(!js.includes("#cfAccount"), "Master JS must not request a per-User Cloudflare Account ID");
+assert.ok(!js.includes("#cfToken"), "Master JS must not request a per-User Cloudflare token");
 assert.ok(!html.includes("Thêm Telegram Source"), "manual Source form must be removed");
 
 for (const table of [
