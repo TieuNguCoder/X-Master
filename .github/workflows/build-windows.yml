@@ -2,6 +2,7 @@ name: Build X-Master Windows
 
 permissions:
   contents: write
+  actions: read
 
 on:
   push:
@@ -27,12 +28,16 @@ jobs:
       - name: Install Router dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           Push-Location master-router
           npm install
           npm run check
           node test/security.test.mjs
           node test/contract.test.mjs
           node test/provisioning-regression.test.mjs
+          node test/domains.test.mjs
+          node test/v04-preservation.test.mjs
           Pop-Location
           node tools/render-child-worker.mjs
           node --check .tmp-child-worker.mjs
@@ -88,7 +93,7 @@ jobs:
       - name: Assemble portable package
         shell: pwsh
         run: |
-          $release = "release/X-Master-v0.4.0"
+          $release = "release/X-Master-v0.4.1"
           New-Item -ItemType Directory -Force $release | Out-Null
           Copy-Item dist/X-Master.exe $release/
           Copy-Item deploy $release/deploy -Recurse
@@ -97,6 +102,7 @@ jobs:
           Remove-Item $release/master-router/wrangler.jsonc -Force -ErrorAction SilentlyContinue
           Copy-Item VERSION $release/VERSION
           Copy-Item README.md $release/README.md
+          Copy-Item DOMAIN-ONLY-v0.4.1.md $release/DOMAIN-ONLY-v0.4.1.md
 
           $nodeExe = (Get-Command node).Source
           $nodeDir = Split-Path $nodeExe -Parent
@@ -110,7 +116,7 @@ jobs:
       - name: Run packaged EXE self-test
         shell: pwsh
         run: |
-          Push-Location release/X-Master-v0.4.0
+          Push-Location release/X-Master-v0.4.1
           $proc = Start-Process -FilePath ".\X-Master.exe" -ArgumentList "--self-test" -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "X-Master self-test failed with exit code $($proc.ExitCode)" }
           Pop-Location
@@ -118,33 +124,49 @@ jobs:
       - name: ZIP and extraction integrity test
         shell: pwsh
         run: |
-          Compress-Archive -Path release/X-Master-v0.4.0/* -DestinationPath release/X-Master-v0.4.0-Windows.zip -CompressionLevel Optimal -Force
+          Compress-Archive -Path release/X-Master-v0.4.1/* -DestinationPath release/X-Master-v0.4.1-Windows.zip -CompressionLevel Optimal -Force
           New-Item -ItemType Directory -Force release/verify | Out-Null
-          Expand-Archive release/X-Master-v0.4.0-Windows.zip release/verify -Force
+          Expand-Archive release/X-Master-v0.4.1-Windows.zip release/verify -Force
           if (-not (Test-Path release/verify/X-Master.exe)) { throw "ZIP missing X-Master.exe" }
           if (-not (Test-Path release/verify/deploy/SETUP-MASTER.ps1)) { throw "ZIP missing deploy script" }
           if (-not (Test-Path release/verify/master-router/web/index.html)) { throw "ZIP missing Master Web" }
-          Get-FileHash release/X-Master-v0.4.0-Windows.zip -Algorithm SHA256
+          Get-FileHash release/X-Master-v0.4.1-Windows.zip -Algorithm SHA256
 
       - name: Upload branch package
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: X-Master-v0.4.0-Windows
-          path: release/X-Master-v0.4.0-Windows.zip
+          name: X-Master-v0.4.1-Windows
+          path: release/X-Master-v0.4.1-Windows.zip
           if-no-files-found: error
 
-      - name: Publish v0.4.0 release
-        if: github.ref == 'refs/heads/main'
+      - name: Publish tested domain-only package
+        if: github.ref == 'refs/heads/fix/v041-domain-only'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          PACKAGE_COMMIT: ${{ github.sha }}
         run: |
-          $tag = "x-master-v0.4.0"
+          $ErrorActionPreference = "Stop"
+          $passed = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            $raw = gh run list --workflow ci.yml --event push --commit $env:PACKAGE_COMMIT --json status,conclusion --limit 1
+            if ($LASTEXITCODE -ne 0) { throw "Cannot check CI result" }
+            $runs = @($raw | ConvertFrom-Json)
+            if ($runs.Count -gt 0 -and $runs[0].status -eq "completed") {
+              if ($runs[0].conclusion -ne "success") { throw "CI failed; will not publish" }
+              $passed = $true
+              break
+            }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $passed) { throw "CI has not passed" }
+          $tag = "x-master-v0.4.1-domain-only"
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "X-Master v0.4.0" --notes "X-Master v0.4.0 simplifies User Web AI to one shared DeepSeek key, auto-fills X identity from Buffer, adds News+Airdrop auto mode, fixes source selections across searches, enforces safe X post length, and forwards Telegram images through each User Cloudinary account into Buffer image assets for X posting."
+            gh release create $tag --target $env:PACKAGE_COMMIT --title "X-Master v0.4.1 — v0.4 + tên miền" --notes-file DOMAIN-ONLY-v0.4.1.md --prerelease
             if ($LASTEXITCODE -ne 0) { throw "Could not create release" }
           }
-          gh release upload $tag release/X-Master-v0.4.0-Windows.zip --clobber
-          if ($LASTEXITCODE -ne 0) { throw "Could not upload release asset" }
+          $hash = (Get-FileHash release/X-Master-v0.4.1-Windows.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  X-Master-v0.4.1-Windows.zip" | Set-Content release/SHA256SUMS.txt -Encoding ascii
+          gh release upload $tag release/X-Master-v0.4.1-Windows.zip release/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload release assets" }

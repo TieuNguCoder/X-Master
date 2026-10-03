@@ -12,6 +12,9 @@ import {
 import { renderChildWorkerSource } from "./child-template.js";
 import { renderAccountRouterSource } from "./account-router-template.js";
 
+import { domainManager } from "./domains.js";
+const domains = domainManager(cloudflareRequest, masterCloudflareInfra, audit);
+
 const ADMIN_COOKIE = "xm_admin";
 const CHILD_COOKIE = "xm_child";
 const ADMIN_TTL_SECONDS = 12 * 60 * 60;
@@ -2521,7 +2524,7 @@ async function handleApi(request, env, ctx) {
     return json({
       ok: database,
       service: "x-master-router",
-      version: "0.4.0",
+      version: "0.4.1",
       database,
       architecture: "master-user-web-five-account-routers",
       collector_ready: Boolean(env.COLLECTOR_SECRET),
@@ -2562,6 +2565,14 @@ async function handleApi(request, env, ctx) {
       });
     }
 
+    if (path === "/api/admin/domains" && request.method === "GET") return json(await domains.overview(env));
+    if (path.startsWith("/api/admin/domains/") && request.method === "POST") {
+      if (request.headers.get("origin") !== new URL(request.url).origin) throw Object.assign(new Error("same_origin_required"), { status: 403 });
+      const body = await readJson(request);
+      if (path === "/api/admin/domains/settings") return json(await domains.saveConfig(env, admin, body));
+      if (path === "/api/admin/domains/attach") return json(await domains.assign(env, admin, String(body.target || ""), body.label));
+    }
+
     if (path === "/api/admin/cloudflare-usage" && request.method === "GET") {
       return json(await cloudflareUsageSummary(env));
     }
@@ -2594,7 +2605,7 @@ async function handleApi(request, env, ctx) {
     }
 
     if (path === "/api/admin/children" && request.method === "POST") {
-      const result = await createChild(env, request, admin);
+      const result = await domains.afterCreate(env, admin, await createChild(env, request, admin));
       return json(result, 201);
     }
 
@@ -2618,10 +2629,12 @@ async function handleApi(request, env, ctx) {
 
     const childMatch = path.match(/^\/api\/admin\/children\/([^/]+)$/);
     if (childMatch && request.method === "PATCH") {
+      const body = await readJson(request.clone());
+      if (body.status === "paused" || body.status === "ready") return json(await domains.mutation(env, childMatch[1], body.status, () => updateChild(env, request, admin, childMatch[1])));
       return json(await updateChild(env, request, admin, childMatch[1]));
     }
     if (childMatch && request.method === "DELETE") {
-      return json(await deleteChild(env, admin, childMatch[1]));
+      return json(await domains.mutation(env, childMatch[1], "delete", () => deleteChild(env, admin, childMatch[1])));
     }
 
     const adminGeminiMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)\/test-gemini$/);
@@ -2719,6 +2732,7 @@ async function handleApi(request, env, ctx) {
 }
 
 export const __test = {
+  domains,
   ensureWorkersSubdomain,
   deployChildWorker,
   accountRouterWorkerName,
@@ -2755,3 +2769,4 @@ export default {
     }
   }
 };
+
