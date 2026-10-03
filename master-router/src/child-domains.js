@@ -136,6 +136,7 @@ export function childDomains(cfRequest, masterInfra, audit, findZone = lookupZon
       await detach(env, old, infra, requestCF);
       await env.DB.prepare("DELETE FROM child_domains WHERE hostname=? AND child_id=? AND desired=0").bind(old.hostname, childId).run();
     }
+    await env.DB.prepare("UPDATE children SET last_error=NULL WHERE id=? AND last_error LIKE 'domain_pending:%'").bind(childId).run();
     await audit(env, "admin", admin.id, "child.domain_updated", "child", childId, { hostname, active: child.status === "ready" });
     return { hostname, state: child.status === "ready" ? "attached" : "suspended" };
   }
@@ -150,6 +151,7 @@ export function childDomains(cfRequest, masterInfra, audit, findZone = lookupZon
     }
     const canonical = records.find(r => r.desired);
     if (canonical) await env.DB.prepare("UPDATE children SET web_url=? WHERE id=?").bind("https://" + canonical.hostname, childId).run();
+    await env.DB.prepare("UPDATE children SET last_error=NULL WHERE id=? AND last_error LIKE 'domain_pending:%'").bind(childId).run();
   }
   async function remove(env, childId, requestCF = cfRequest) {
     const records = await rows(env, childId);

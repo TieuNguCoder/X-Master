@@ -1655,6 +1655,7 @@ async function createChild(env, request, admin) {
       try {
         await domains.assign(env, admin, childId, body.subdomain || slug, requestCF);
       } catch (error) {
+        await requestCF.assertLease();
         domainWarning = safeError(error);
         await env.DB.prepare("UPDATE children SET last_error=? WHERE id=?").bind("domain_pending:" + domainWarning, childId).run();
       }
@@ -2465,7 +2466,10 @@ async function handleApi(request, env, ctx) {
           await domains.sync(env, childId, state.status, requestCF);
           return { domains: await domains.rows(env, childId) };
         }
-        return domains.assign(env, admin, childId, child.slug, requestCF);
+        const cfg = await domains.config(env);
+        const pending = records.find(row => row.hostname.endsWith("." + cfg.base_domain));
+        const label = pending ? pending.hostname.slice(0, -(cfg.base_domain.length + 1)) : child.slug;
+        return domains.assign(env, admin, childId, label, requestCF);
       }));
     }
 
@@ -2648,4 +2652,3 @@ export default {
     }
   }
 };
-

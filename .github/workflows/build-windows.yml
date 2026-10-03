@@ -161,10 +161,12 @@ jobs:
             Start-Sleep -Seconds 10
           }
           if (-not $passed) { throw "CI has not passed; package was not published" }
+          $currentHead = gh api "repos/${{ github.repository }}/git/ref/heads/$env:PACKAGE_BRANCH" --jq .object.sha
+          if ($LASTEXITCODE -ne 0 -or $currentHead -ne $env:PACKAGE_COMMIT) { throw "Branch changed; refusing to publish a superseded package" }
           $tag = "x-master-v0.5.0"
           $extra = @()
           if ($env:PACKAGE_BRANCH -ne "main") {
-            $tag = "x-master-v0.5.0-preview.1"
+            $tag = "x-master-v0.5.0-preview.2"
             $extra = @("--prerelease")
           }
           gh release view $tag *> $null

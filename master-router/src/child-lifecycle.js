@@ -164,7 +164,9 @@ export function childLifecycle(cfRequest, masterInfra, audit, domains = null) {
       deploymentStarted = true;
       const requestCF = async (...args) => {
         await renew(env, childId, operationId);
-        return cfRequest(...args);
+        const response = await cfRequest(...args);
+        await renew(env, childId, operationId);
+        return response;
       };
       requestCF.assertLease = () => renew(env, childId, operationId);
       const result = await deploy(requestCF);
@@ -220,7 +222,9 @@ export function childLifecycle(cfRequest, masterInfra, audit, domains = null) {
     try {
       const requestCF = async (...args) => {
         await renew(env, childId, operationId);
-        return cfRequest(...args);
+        const response = await cfRequest(...args);
+        await renew(env, childId, operationId);
+        return response;
       };
       requestCF.assertLease = () => renew(env, childId, operationId);
       const result = await work(requestCF);

@@ -243,3 +243,14 @@ test("a domain operation and deletion cannot run concurrently for the same child
   finally{unblock();await attaching;}
   assert.equal(f.count("children"),1);assert.equal(f.domains.size,1);
 });
+
+test("retry preserves a requested subdomain after a create warning and clears the stale error",async t=>{
+  const f=await setup(t);f.http.hook=c=>c.path === "/workers/domains" && c.method === "PUT"?cfError(403,10000):null;
+  const request=new Request("https://master.example/api/admin/children",{method:"POST",body:JSON.stringify({name:"New user",password:"test-password",subdomain:"chosen-name",cloudinary_cloud_name:"cloud",cloudinary_api_key:"cloud-key",cloudinary_api_secret:"cloud-secret"})});
+  const created=await __test.createChild(f.env,request,f.admin);assert.match(created.warning,/cloudflare/);f.http.hook=null;
+  f.insert("INSERT INTO admin_sessions(id,token_hash,expires_at) VALUES('owner-retry',?,'2099-01-01')",await hmacHex(f.env.SESSION_PEPPER,"owner-token"));
+  const result=await master.fetch(new Request("https://master.example/api/admin/children/"+created.child.id+"/sync-domain",{method:"POST",headers:{cookie:"xm_admin=owner-token",origin:"https://master.example","content-type":"application/json"},body:"{}"}),f.env,{});
+  assert.equal(result.status,200);
+  const row=f.sqlite.prepare("SELECT web_url,last_error FROM children WHERE id=?").get(created.child.id);
+  assert.equal(row.web_url,"https://chosen-name.bemail2017.com");assert.equal(row.last_error,null);
+});
