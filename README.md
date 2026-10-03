@@ -1,5 +1,7 @@
 # X-Master
 
+**v0.4.1: v0.4 + tên miền, giữ luồng chính.** Xem [DOMAIN-ONLY-v0.4.1.md](DOMAIN-ONLY-v0.4.1.md).
+
 X-Master is an automation platform built around one central **Master Router** and isolated **User Web + Account Router** Workers.
 
 ## Product model
@@ -287,4 +289,5 @@ CI currently covers:
 - live generated Child Web login/session/settings;
 - Windows EXE self-test;
 - ZIP extract/integrity check.
+
 

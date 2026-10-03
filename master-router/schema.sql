@@ -205,3 +205,40 @@ CREATE TABLE IF NOT EXISTS ingest_account_routes (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_account_routes_account
 ON ingest_account_routes(account_id, created_at DESC);
+
+
+-- Domain-only extension; compatible with prior preview tables; no user data changes.
+CREATE TABLE IF NOT EXISTS domain_settings (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  base_domain TEXT NOT NULL,
+  zone_id TEXT,
+  account_id TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS child_domains (
+  hostname TEXT PRIMARY KEY,
+  child_id TEXT NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL,
+  zone_id TEXT NOT NULL,
+  worker_name TEXT NOT NULL,
+  workers_dev_url TEXT NOT NULL,
+  domain_id TEXT,
+  desired INTEGER NOT NULL DEFAULT 0 CHECK(desired IN (0,1)),
+  state TEXT NOT NULL DEFAULT 'pending',
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_child_domains_child ON child_domains(child_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_child_domain_canonical ON child_domains(child_id) WHERE desired=1;
+
+CREATE TABLE IF NOT EXISTS master_domains (
+ hostname TEXT PRIMARY KEY, child_id TEXT NOT NULL DEFAULT 'master', account_id TEXT NOT NULL,
+ zone_id TEXT NOT NULL, worker_name TEXT NOT NULL, workers_dev_url TEXT NOT NULL DEFAULT '', domain_id TEXT,
+ desired INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', last_error TEXT,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_master_domain_canonical ON master_domains(child_id) WHERE desired=1;
+CREATE TABLE IF NOT EXISTS domain_operations(target TEXT PRIMARY KEY,operation_id TEXT,expires_at TEXT);
+
+CREATE TABLE IF NOT EXISTS domain_hostnames(hostname TEXT PRIMARY KEY,target TEXT NOT NULL);

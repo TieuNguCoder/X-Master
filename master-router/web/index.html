@@ -37,6 +37,7 @@
     <section id="app" class="hidden">
       <nav class="tabs">
         <button class="tab active" data-tab="children">User Webs</button>
+        <button class="tab" data-tab="domains">Tên miền</button>
         <button class="tab" data-tab="usage">Cloudflare Usage</button>
         <button class="tab" data-tab="sources">Telegram Catalog</button>
         <button class="tab" data-tab="audit">Logs</button>
@@ -102,6 +103,27 @@
             <button id="refreshBtn" class="ghost">Refresh</button>
           </div>
           <div id="childrenList" class="cards"></div>
+        </article>
+      </section>
+
+      <section id="tab-domains" class="tabpage hidden">
+        <article class="panel">
+          <h2>Tên miền cho Master và web con</h2>
+          <p>Thêm địa chỉ cho Worker đang có. Các đường dẫn workers.dev vẫn dùng được. Gắn miền không cập nhật code hoặc đổi trạng thái chạy/dừng của web.</p>
+          <form id="domainSettings" class="stack">
+            <label>Miền trên tài khoản Cloudflare của Master<input id="domainBase" value="bemail2017.com" required></label>
+            <label><input id="domainAuto" type="checkbox" style="width:auto"> Tự gắn miền khi tạo web con mới</label>
+            <button>Lưu cấu hình miền</button>
+          </form>
+          <hr>
+          <form id="domainAttach" class="stack">
+            <label>Web cần gắn miền<select id="domainTarget"><option value="master">Master Router — web mẹ</option></select></label>
+            <label>Tên miền con<input id="domainLabel" value="router" required maxlength="63"><small>Ví dụ: router.bemail2017.com hoặc hydraairdrop.bemail2017.com</small></label>
+            <button>Gắn / thử lại miền</button>
+          </form>
+          <div class="button-row" style="margin-top:16px"><button id="domainAll" class="secondary">Chỉ gắn miền cho toàn bộ web</button><button id="domainRefresh" class="ghost">Refresh</button></div>
+          <div id="domainStatus" class="status" style="white-space:pre-wrap"></div>
+          <div id="domainList" class="rows"></div>
         </article>
       </section>
 
@@ -180,5 +202,6 @@
 </div>
 <div id="toast" class="toast hidden"></div>
 <script type="module" src="/app.js"></script>
+<script type="module" src="/domains.js"></script>
 </body>
 </html>

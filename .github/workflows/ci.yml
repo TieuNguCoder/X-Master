@@ -32,6 +32,11 @@ jobs:
       - name: Provisioning regressions
         run: node test/provisioning-regression.test.mjs
 
+      - name: Domain-only tests and v0.4 preservation
+        run: |
+          node test/domains.test.mjs
+          node test/v04-preservation.test.mjs
+
       - name: Render and syntax-check Child Worker
         working-directory: .
         run: |
@@ -178,3 +183,4 @@ jobs:
           fi
 
           node ../tools/account-router-live-smoke.mjs
+
