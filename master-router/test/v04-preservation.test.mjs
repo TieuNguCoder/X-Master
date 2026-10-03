@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 const manifest=JSON.parse(readFileSync(new URL('./v04-preservation.json',import.meta.url),'utf8'));
 const root=new URL('../../',import.meta.url);
-const digest=text=>createHash('sha256').update(text.replaceAll('0.4.1','0.4.0').replace(/\n*$/,'')+'\n').digest('hex');
+const digest=text=>createHash('sha256').update(text.replaceAll('\r\n','\n').replaceAll('0.4.1','0.4.0').replace(/\n*$/,'')+'\n').digest('hex');
 for(const [file,expected] of Object.entries(manifest.files))assert.equal(digest(readFileSync(new URL(file,root),'utf8')),expected,'v0.4 protected file changed: '+file);
 const source=readFileSync(new URL('master-router/src/index.js',root),'utf8');
 const matches=[...source.matchAll(/^(?:async )?function (\w+)\(/gm)];
