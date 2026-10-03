@@ -11,6 +11,8 @@ import {
 } from "./security.js";
 import { renderChildWorkerSource } from "./child-template.js";
 import { renderAccountRouterSource } from "./account-router-template.js";
+import { childDomains } from "./child-domains.js";
+import { childLifecycle } from "./child-lifecycle.js";
 
 const ADMIN_COOKIE = "xm_admin";
 const CHILD_COOKIE = "xm_child";
@@ -162,6 +164,7 @@ function masterCloudflareInfra(env) {
 async function cloudflareRequest(infra, path, init = {}) {
   const response = await fetch("https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id + path, {
     ...init,
+    signal: init.signal || AbortSignal.timeout(20000),
     headers: {
       Authorization: "Bearer " + infra.cloudflare_api_token,
       ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }),
@@ -173,7 +176,10 @@ async function cloudflareRequest(infra, path, init = {}) {
   try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
   if (!response.ok || body.success === false) {
     const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
-    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
+    throw Object.assign(new Error("cloudflare:" + detail), {
+      status: 502, expose: true, cloudflareStatus: response.status,
+      cloudflareCodes: (body.errors || []).map(e => Number(e.code))
+    });
   }
   return body;
 }
@@ -302,193 +308,14 @@ async function cloudflareUsageSummary(env) {
   };
 }
 
-async function cloudflareWorkerProbe(infra, workerName) {
-  const response = await fetch(
-    "https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id +
-      "/workers/scripts/" + encodeURIComponent(workerName),
-    { headers: { Authorization: "Bearer " + infra.cloudflare_api_token } }
-  );
-  if (response.status === 404) return { exists: false, status: 404 };
-  const text = await response.text();
-  let body = {};
-  try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
-  if (!response.ok || body.success === false) {
-    const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
-    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
-  }
-  return { exists: true, status: response.status };
-}
+const domains = childDomains(cloudflareRequest, masterCloudflareInfra, audit);
+const childWorkers = childLifecycle(cloudflareRequest, masterCloudflareInfra, audit, domains);
 
-async function setCloudflareWorkerEnabled(infra, workerName, enabled) {
-  const probe = await cloudflareWorkerProbe(infra, workerName);
-  if (!probe.exists) return { worker_name: workerName, exists: false, enabled: false };
-
-  const path = "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain";
-  if (enabled) {
-    await cloudflareRequest(infra, path, {
-      method: "POST",
-      body: JSON.stringify({ enabled: true, previews_enabled: false })
-    });
-  } else {
-    await cloudflareRequest(infra, path, { method: "DELETE" });
-  }
-
-  const state = await cloudflareRequest(infra, path, { method: "GET" });
-  const actual = Boolean(state?.result?.enabled);
-  if (actual !== Boolean(enabled)) {
-    throw Object.assign(new Error("cloudflare_worker_state_verification_failed:" + workerName), { status: 502, expose: true });
-  }
-  return { worker_name: workerName, exists: true, enabled: actual };
-}
-
-async function deleteCloudflareWorkerVerified(infra, workerName) {
-  const before = await cloudflareWorkerProbe(infra, workerName);
-  if (!before.exists) {
-    return { worker_name: workerName, existed: false, deleted: false, verified_absent: true };
-  }
-
-  const response = await fetch(
-    "https://api.cloudflare.com/client/v4/accounts/" + infra.cloudflare_account_id +
-      "/workers/scripts/" + encodeURIComponent(workerName) + "?force=true",
-    {
-      method: "DELETE",
-      headers: { Authorization: "Bearer " + infra.cloudflare_api_token }
-    }
-  );
-  const text = await response.text();
-  if (!response.ok) {
-    let body = {};
-    try { body = JSON.parse(text || "{}"); } catch { body = { raw: text }; }
-    const detail = (body.errors || []).map((e) => e.message || String(e)).join("; ") || body.raw || ("HTTP " + response.status);
-    throw Object.assign(new Error("cloudflare:" + detail), { status: 502, expose: true });
-  }
-
-  const after = await cloudflareWorkerProbe(infra, workerName);
-  if (after.exists) {
-    throw Object.assign(new Error("cloudflare_worker_delete_verification_failed:" + workerName), { status: 502, expose: true });
-  }
-  return { worker_name: workerName, existed: true, deleted: true, verified_absent: true };
-}
-
-function sameCloudflareInfra(a, b) {
-  return Boolean(a && b &&
-    String(a.cloudflare_account_id || "") === String(b.cloudflare_account_id || "") &&
-    String(a.cloudflare_api_token || "") === String(b.cloudflare_api_token || ""));
-}
-
-async function childCloudflareCandidates(env, child) {
-  const candidates = [{ kind: "master", infra: masterCloudflareInfra(env) }];
-  if (!child?.encrypted_json) return candidates;
-
-  try {
-    const stored = await decryptJson(env.MASTER_KEY, child.encrypted_json);
-    const legacy = {
-      cloudflare_account_id: String(stored.cloudflare_account_id || "").trim(),
-      cloudflare_api_token: String(stored.cloudflare_api_token || "").trim()
-    };
-    if (legacy.cloudflare_account_id.length >= 8 && legacy.cloudflare_api_token.length >= 16 &&
-        !candidates.some((x) => sameCloudflareInfra(x.infra, legacy))) {
-      candidates.push({ kind: "legacy", infra: legacy });
-    }
-  } catch {}
-  return candidates;
-}
-
-async function locateWorkerCandidates(env, child, workerName) {
-  const found = [];
-  const candidates = await childCloudflareCandidates(env, child);
-  for (const candidate of candidates) {
-    const probe = await cloudflareWorkerProbe(candidate.infra, workerName);
-    if (probe.exists) found.push(candidate);
-  }
-  return { found, candidates };
-}
-
-async function currentWorkersDevSubdomain(env) {
-  try {
-    const infra = masterCloudflareInfra(env);
-    const body = await cloudflareRequest(infra, "/workers/subdomain", { method: "GET" });
-    return String(body?.result?.subdomain || "").trim().toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function workersDevSubdomainFromUrl(url) {
-  try {
-    const host = new URL(String(url || "")).hostname.toLowerCase();
-    const suffix = ".workers.dev";
-    if (!host.endsWith(suffix)) return "";
-    const left = host.slice(0, -suffix.length);
-    const parts = left.split(".");
-    return parts.length >= 2 ? parts[parts.length - 1] : "";
-  } catch {
-    return "";
-  }
-}
-
-async function manageChildWorkers(env, child, action) {
-  const slots = await listRouterSlots(env, child.id);
-  const targets = [
-    ...(child.worker_name ? [{ kind: "user", worker_name: child.worker_name, web_url: child.web_url || "" }] : []),
-    ...slots.filter((x) => x.worker_name).map((x) => ({
-      kind: "router",
-      worker_name: x.worker_name,
-      web_url: x.web_url || "",
-      slot_index: Number(x.slot_index)
-    }))
-  ];
-
-  const currentSubdomain = await currentWorkersDevSubdomain(env);
-  const results = [];
-  const unresolved = [];
-
-  for (const target of targets) {
-    const located = await locateWorkerCandidates(env, child, target.worker_name);
-    if (!located.found.length) {
-      const targetSubdomain = workersDevSubdomainFromUrl(target.web_url);
-      const looksLegacyUnknown = Boolean(targetSubdomain && currentSubdomain && targetSubdomain !== currentSubdomain);
-      if (looksLegacyUnknown || action === "resume") {
-        unresolved.push({
-          worker_name: target.worker_name,
-          workers_dev_subdomain: targetSubdomain || null,
-          reason: looksLegacyUnknown ? "legacy_worker_credentials_unavailable" : "worker_missing_cannot_resume"
-        });
-        continue;
-      }
-      results.push({
-        ...target,
-        already_absent: true,
-        verified_on_known_accounts: true
-      });
-      continue;
-    }
-
-    for (const locatedCandidate of located.found) {
-      if (action === "delete") {
-        results.push({
-          ...target,
-          account_kind: locatedCandidate.kind,
-          ...(await deleteCloudflareWorkerVerified(locatedCandidate.infra, target.worker_name))
-        });
-      } else {
-        results.push({
-          ...target,
-          account_kind: locatedCandidate.kind,
-          ...(await setCloudflareWorkerEnabled(locatedCandidate.infra, target.worker_name, action === "resume"))
-        });
-      }
-    }
-  }
-
-  if (unresolved.length) {
-    const error = Object.assign(new Error(
-      "legacy_worker_credentials_required:" + unresolved.map((x) => x.worker_name).join(",")
-    ), { status: 409, expose: true });
-    error.unresolved = unresolved;
-    throw error;
-  }
-  return { action, results, targets: targets.length };
+async function assertPostingEnabled(env, accountId) {
+  const active = await env.DB.prepare(
+    "SELECT a.id FROM x_accounts a JOIN children c ON c.id=a.child_id WHERE a.id=? AND a.enabled=1 AND c.status='ready'"
+  ).bind(accountId).first();
+  if (!active) throw Object.assign(new Error("x_account_or_child_paused"), { status: 409 });
 }
 
 async function bufferGraphql(apiKey, query) {
@@ -978,6 +805,7 @@ async function bufferCreateNow(apiKey, channelId, text, assets = []) {
 
 async function processAccountRoute(env, eventId, account, sourceText, assets = []) {
   try {
+    await assertPostingEnabled(env, account.id);
     let secrets = {};
     if (account.encrypted_json) {
       secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
@@ -1000,6 +828,7 @@ async function processAccountRoute(env, eventId, account, sourceText, assets = [
       ? await deepseekRewrite(ai.deepseek_api_key, sourceText, accountWithSettings)
       : "";
 
+    await assertPostingEnabled(env, account.id);
     const post = await bufferCreateNow(
       secrets.buffer_api_key,
       account.buffer_channel_id,
@@ -1126,9 +955,9 @@ async function preflightInfra(env, childInfra) {
   return checks;
 }
 
-async function ensureWorkersSubdomain(infra) {
+async function ensureWorkersSubdomain(infra, requestCF = cloudflareRequest) {
   try {
-    const current = await cloudflareRequest(infra, "/workers/subdomain");
+    const current = await requestCF(infra, "/workers/subdomain");
     if (current?.result?.subdomain) return current.result.subdomain;
   } catch {
     // A new Cloudflare account may not have a workers.dev subdomain yet.
@@ -1139,7 +968,7 @@ async function ensureWorkersSubdomain(infra) {
   for (let i = 0; i < 5; i++) {
     const candidate = "xmaster-" + tail + (i ? "-" + i : "");
     try {
-      const created = await cloudflareRequest(infra, "/workers/subdomain", {
+      const created = await requestCF(infra, "/workers/subdomain", {
         method: "PUT",
         body: JSON.stringify({ subdomain: candidate })
       });
@@ -1154,10 +983,9 @@ async function ensureWorkersSubdomain(infra) {
   );
 }
 
-async function deployChildWorker(infra, child, childSecret, masterRoot) {
+async function deployChildWorker(infra, child, childSecret, masterRoot, masterWorker = "x-master-router", requestCF = cloudflareRequest) {
   const source = renderChildWorkerSource();
   const workerName = ("xm-" + child.slug + "-" + child.id.slice(-6)).slice(0, 62);
-  let uploaded = false;
 
   try {
     const metadata = {
@@ -1167,7 +995,7 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
         { type: "plain_text", name: "CHILD_ID", text: child.id },
         { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
         { type: "secret_text", name: "CHILD_SECRET", text: childSecret },
-        { type: "service", name: "MASTER", service: "x-master-router" }
+        { type: "service", name: "MASTER", service: masterWorker }
       ]
     };
 
@@ -1175,30 +1003,29 @@ async function deployChildWorker(infra, child, childSecret, masterRoot) {
     form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
     form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
 
-    await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+    await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
       method: "PUT",
       body: form
     });
-    uploaded = true;
 
-    await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+    await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
       method: "POST",
       body: JSON.stringify({ enabled: true })
     });
 
-    const subdomain = await ensureWorkersSubdomain(infra);
+    const subdomain = await ensureWorkersSubdomain(infra, requestCF);
     const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
 
     return { workerName, webUrl };
   } catch (error) {
-    if (uploaded) await deleteChildWorker(infra, workerName, true);
+    // The caller journals the Worker name before upload; retain it for verified recovery.
     throw error;
   }
 }
-async function deleteChildWorker(infra, workerName, bestEffort = false) {
+async function deleteChildWorker(infra, workerName, bestEffort = false, requestCF = cloudflareRequest) {
   if (!workerName) return;
   try {
-    await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), { method: "DELETE" });
+    await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), { method: "DELETE" });
   } catch (error) {
     if (!bestEffort) throw error;
   }
@@ -1209,10 +1036,10 @@ function accountRouterWorkerName(child, slotIndex) {
   return ("xmr-" + base + "-r" + slotIndex + "-" + child.id.slice(-5)).slice(0, 62);
 }
 
-async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot, deleteOnFailure = true) {
+async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSecret, masterRoot, deleteOnFailure = true, existingWorkerName = null, requestCF = cloudflareRequest) {
   const infra = masterCloudflareInfra(env);
   const source = renderAccountRouterSource();
-  const workerName = accountRouterWorkerName(child, slotIndex);
+  const workerName = existingWorkerName || accountRouterWorkerName(child, slotIndex);
   const metadata = {
     main_module: "worker.js",
     compatibility_date: "2026-09-18",
@@ -1221,7 +1048,7 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
       { type: "secret_text", name: "ROUTER_SECRET", text: routerSecret },
-      { type: "service", name: "MASTER", service: "x-master-router" }
+      { type: "service", name: "MASTER", service: env.CF_MASTER_WORKER || "x-master-router" }
     ]
   };
 
@@ -1229,16 +1056,16 @@ async function deployAccountRouterWorker(env, child, slotId, slotIndex, routerSe
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
   form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
 
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
     method: "PUT",
     body: form
   });
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
     method: "POST",
     body: JSON.stringify({ enabled: true })
   });
 
-  const subdomain = await ensureWorkersSubdomain(infra);
+  const subdomain = await ensureWorkersSubdomain(infra, requestCF);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
 
   return { workerName, webUrl };
@@ -1255,13 +1082,14 @@ async function listRouterSlots(env, childId) {
   }));
 }
 
-async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = false) {
+async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = false, requestCF = cloudflareRequest) {
   const existing = await listRouterSlots(env, child.id);
   const byIndex = new Map(existing.map((row) => [Number(row.slot_index), row]));
   const created = [];
 
   try {
     for (let slotIndex = 1; slotIndex <= 5; slotIndex++) {
+      await requestCF.assertLease?.();
       const current = byIndex.get(slotIndex);
       if (!forceUpdate && current && current.web_url && (current.status === "ready" || current.status === "assigned")) continue;
 
@@ -1291,9 +1119,10 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
       let deployed;
       try {
         deployed = await deployAccountRouterWorker(
-          env, child, slotId, slotIndex, routerSecret, masterRoot, !current
+          env, child, slotId, slotIndex, routerSecret, masterRoot, !current, current?.worker_name, requestCF
         );
       } catch (error) {
+        await requestCF.assertLease?.();
         if (current) {
           await env.DB.prepare(
             "UPDATE child_router_slots SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
@@ -1305,6 +1134,7 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
         }
         throw error;
       }
+      await requestCF.assertLease?.();
       await env.DB.prepare(
         `UPDATE child_router_slots
             SET worker_name=?,web_url=?,status=CASE WHEN account_id IS NULL THEN 'ready' ELSE 'assigned' END,
@@ -1314,12 +1144,8 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
       created.push({ id: slotId, worker_name: deployed.workerName, was_existing: Boolean(current) });
     }
   } catch (error) {
-    const infra = masterCloudflareInfra(env);
-    for (const item of created) {
-      if (item.was_existing) continue;
-      await deleteChildWorker(infra, item.worker_name, true);
-      await env.DB.prepare("DELETE FROM child_router_slots WHERE id=?").bind(item.id).run().catch(() => {});
-    }
+    await requestCF.assertLease?.();
+    // Keep provisioned slots and their secrets for retry/verified deletion.
     throw error;
   }
 
@@ -1336,6 +1162,7 @@ async function ensureChildRouterSlots(env, child, masterRoot, forceUpdate = fals
   const pendingAccounts = unboundAccounts.results || [];
   const availableSlots = freeSlots.results || [];
   for (let i = 0; i < Math.min(pendingAccounts.length, availableSlots.length); i++) {
+    await requestCF.assertLease?.();
     await env.DB.prepare(
       "UPDATE child_router_slots SET account_id=?,status='assigned',updated_at=CURRENT_TIMESTAMP WHERE id=? AND account_id IS NULL"
     ).bind(pendingAccounts[i].id, availableSlots[i].id).run();
@@ -1492,6 +1319,8 @@ async function listXAccounts(env, childId) {
 async function listChildren(env) {
   const result = await env.DB.prepare(
     `SELECT c.id,c.name,c.slug,c.status,c.worker_name,c.web_url,c.last_health_at,c.last_error,c.created_at,c.updated_at,
+       (SELECT verified_status FROM child_lifecycle l WHERE l.child_id=c.id) AS cloudflare_verified_status,
+       (SELECT action FROM child_lifecycle l WHERE l.child_id=c.id AND l.operation_id IS NOT NULL AND datetime(l.lease_expires_at)>CURRENT_TIMESTAMP) AS lifecycle_action,
        (SELECT COUNT(*) FROM x_accounts a WHERE a.child_id=c.id) AS account_count,
        (SELECT COUNT(DISTINCT xs.source_id)
           FROM x_accounts a JOIN x_account_sources xs ON xs.account_id=a.id
@@ -1501,7 +1330,7 @@ async function listChildren(env) {
 
   const children = [];
   for (const child of (result.results || [])) {
-    children.push({ ...child, router_slots: await listRouterSlots(env, child.id), accounts: await listXAccounts(env, child.id) });
+    children.push({ ...child, domains: await domains.rows(env, child.id), router_slots: await listRouterSlots(env, child.id), accounts: await listXAccounts(env, child.id) });
   }
   return children;
 }
@@ -1593,7 +1422,7 @@ async function childMe(env, child) {
   };
 }
 
-async function saveXAccount(env, child, body, accountId = null) {
+async function saveXAccount(env, child, body, accountId = null, actor = { type: "child", id: child.id }) {
   const bufferChannelNameRaw = String(body.buffer_channel_name || "").trim();
   const displayName = String(body.display_name || bufferChannelNameRaw || "").trim();
   const xHandle = String(body.x_handle || "").trim().replace(/^@/, "") || null;
@@ -1701,7 +1530,7 @@ async function saveXAccount(env, child, body, accountId = null) {
     ).bind(finalId, freeSlot.id).run();
   }
 
-  await audit(env, "child", child.id, existing ? "x_account.updated" : "x_account.created", "x_account", finalId, {
+  await audit(env, actor.type, actor.id, existing ? "x_account.updated" : "x_account.created", "x_account", finalId, {
     display_name: displayName,
     x_handle: xHandle,
     source_count: sourceIds.length,
@@ -1761,6 +1590,8 @@ async function createChild(env, request, admin) {
 
   const childInfra = normalizeChildInfra(body);
   const cloudflare = masterCloudflareInfra(env);
+  const domainConfig = await domains.config(env);
+  if (body.subdomain) await domains.validate(env, body.subdomain);
 
   const jobId = id("job");
   await env.DB.prepare(
@@ -1769,7 +1600,6 @@ async function createChild(env, request, admin) {
 
   let childId = null;
   let workerName = null;
-  let deployed = false;
 
   try {
     await preflightInfra(env, childInfra);
@@ -1794,15 +1624,17 @@ async function createChild(env, request, admin) {
       ).bind(childId)
     ]);
 
+    return await childWorkers.withLock(env, childId, "create", async requestCF => {
     await env.DB.prepare(
       "UPDATE deployment_jobs SET child_id=?,step=? WHERE id=?"
     ).bind(childId, "deploy_worker", jobId).run();
 
     const masterRoot = new URL(request.url).origin;
     const child = { id: childId, name, slug };
-    const deployedResult = await deployChildWorker(cloudflare, child, childSecret, masterRoot);
+    workerName = ("xm-" + slug + "-" + childId.slice(-6)).slice(0, 62);
+    await env.DB.prepare("UPDATE children SET worker_name=? WHERE id=?").bind(workerName, childId).run();
+    const deployedResult = await deployChildWorker(cloudflare, child, childSecret, masterRoot, env.CF_MASTER_WORKER || "x-master-router", requestCF);
     workerName = deployedResult.workerName;
-    deployed = true;
 
     await env.DB.prepare(
       "UPDATE children SET worker_name=?,web_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?"
@@ -1812,11 +1644,22 @@ async function createChild(env, request, admin) {
       "UPDATE deployment_jobs SET step=? WHERE id=?"
     ).bind("deploy_5_router_slots", jobId).run();
 
-    const routerSlots = await ensureChildRouterSlots(env, { ...child, worker_name: workerName, web_url: deployedResult.webUrl }, masterRoot);
+    const routerSlots = await ensureChildRouterSlots(env, { ...child, worker_name: workerName, web_url: deployedResult.webUrl }, masterRoot, false, requestCF);
 
     await env.DB.prepare(
       "UPDATE children SET status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(childId).run();
+
+    let domainWarning = null;
+    if (domainConfig.enabled) {
+      try {
+        await domains.assign(env, admin, childId, body.subdomain || slug, requestCF);
+      } catch (error) {
+        domainWarning = safeError(error);
+        await env.DB.prepare("UPDATE children SET last_error=? WHERE id=?").bind("domain_pending:" + domainWarning, childId).run();
+      }
+    }
+    const canonical = await env.DB.prepare("SELECT web_url FROM children WHERE id=?").bind(childId).first();
 
     await env.DB.prepare(
       "UPDATE deployment_jobs SET status='success',step='ready',finished_at=CURRENT_TIMESTAMP WHERE id=?"
@@ -1830,29 +1673,29 @@ async function createChild(env, request, admin) {
     });
 
     return {
+      warning: domainWarning,
       child: {
         id: childId,
         name,
         slug,
         status: "ready",
         worker_name: workerName,
-        web_url: deployedResult.webUrl,
+        web_url: canonical.web_url,
         router_slots: await listRouterSlots(env, childId),
         account_count: 0
       }
     };
+    });
   } catch (error) {
     if (childId) {
-      const slots = await listRouterSlots(env, childId).catch(() => []);
-      for (const slot of slots) await deleteChildWorker(cloudflare, slot.worker_name, true);
-    }
-    if (deployed && workerName) await deleteChildWorker(cloudflare, workerName, true);
-    if (childId) {
-      await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run().catch(() => {});
+      await env.DB.prepare("UPDATE children SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND NOT EXISTS(SELECT 1 FROM child_lifecycle l WHERE l.child_id=children.id AND l.operation_id IS NOT NULL AND datetime(l.lease_expires_at)>CURRENT_TIMESTAMP)")
+        .bind(safeError(error), childId).run().catch(() => {});
     }
     await env.DB.prepare(
-      "UPDATE deployment_jobs SET status='rolled_back',step='failed',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?"
+      "UPDATE deployment_jobs SET status='failed',step='retry_required',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(safeError(error), jobId).run().catch(() => {});
+    error.expose = true;
+    if (childId) error.message += "; giữ lại web " + childId + " để Update User Web hoặc xóa có xác minh";
     throw error;
   }
 }
@@ -1861,6 +1704,32 @@ async function updateChild(env, request, admin, childId) {
   const child = await env.DB.prepare("SELECT * FROM children WHERE id=?").bind(childId).first();
   if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
   const body = await readJson(request);
+
+  if (body.status !== undefined) {
+    if (!["ready", "paused"].includes(body.status) || Object.keys(body).some(key => key !== "status")) {
+      throw Object.assign(new Error("status_update_must_be_separate"), { status: 400 });
+    }
+    const result = await childWorkers.changeStatus(env, admin, childId, body.status);
+    return { ...result, child: await env.DB.prepare("SELECT id,name,slug,status,web_url,worker_name FROM children WHERE id=?").bind(childId).first() };
+  }
+  return childWorkers.withLock(env, childId, "edit", async requestCF => {
+    if (body.name !== undefined) {
+      const name = String(body.name).trim();
+      if (name.length < 2 || name.length > 120) throw Object.assign(new Error("child_name_length_2_to_120"), { status: 400 });
+    }
+    if (body.deepseek_api_key && String(body.deepseek_api_key).trim().length < 8) throw Object.assign(new Error("deepseek_api_key_required"), { status: 400 });
+    if (body.password !== undefined && String(body.password || "").length < 8) throw Object.assign(new Error("password_too_short"), { status: 400 });
+    let newInfra = null;
+    if (body.cloudinary !== undefined) {
+      const normalized = normalizeChildInfra(body.cloudinary);
+      const row = await env.DB.prepare("SELECT encrypted_json FROM child_infra WHERE child_id=?").bind(childId).first();
+      newInfra = await encryptJson(env.MASTER_KEY, { ...await decryptJson(env.MASTER_KEY, row.encrypted_json), ...normalized });
+    }
+    if (body.subdomain !== undefined) await domains.assign(env, admin, childId, body.subdomain, requestCF);
+    await requestCF.assertLease();
+    if (body.name !== undefined) await env.DB.prepare("UPDATE children SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(String(body.name).trim(), childId).run();
+    if (newInfra) await env.DB.prepare("UPDATE child_infra SET encrypted_json=?,updated_at=CURRENT_TIMESTAMP WHERE child_id=?").bind(newInfra, childId).run();
+    if (body.deepseek_api_key) await saveChildAiSettings(env, child, { deepseek_api_key: String(body.deepseek_api_key) });
 
   if (body.password !== undefined) {
     const password = String(body.password || "");
@@ -1891,23 +1760,16 @@ async function updateChild(env, request, admin, childId) {
     await audit(env, "admin", admin.id, "child.sources_updated", "child", childId, { source_count: sourceIds.length });
   }
 
-  if (body.status === "ready" || body.status === "paused") {
-    const action = body.status === "paused" ? "stop" : "resume";
-    const managedChild = await env.DB.prepare(
-      "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
-    ).bind(childId).first();
-    const cloudflare = await manageChildWorkers(env, managedChild, action);
-    await env.DB.prepare("UPDATE children SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(body.status, childId).run();
-    await audit(env, "admin", admin.id, body.status === "paused" ? "child.workers_stopped" : "child.workers_resumed", "child", childId, {
-      status: body.status,
-      cloudflare
-    });
-  }
-
+  await audit(env, "admin", admin.id, "child.edited", "child", childId, { fields: Object.keys(body).filter(key => key !== "password") });
   return { child: await env.DB.prepare("SELECT id,name,slug,status,web_url,worker_name FROM children WHERE id=?").bind(childId).first() };
+  });
 }
 
 async function updateChildWorkerCode(env, request, admin, childId) {
+  return childWorkers.withDeployment(env, admin, childId, "update", requestCF => updateChildWorkerCodeUnlocked(env, request, admin, childId, requestCF));
+}
+
+async function updateChildWorkerCodeUnlocked(env, request, admin, childId, requestCF) {
   const child = await env.DB.prepare(
     "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
   ).bind(childId).first();
@@ -1915,14 +1777,20 @@ async function updateChildWorkerCode(env, request, admin, childId) {
   if (!child.encrypted_json) throw Object.assign(new Error("child_infra_missing"), { status: 409 });
 
   const stored = await decryptJson(env.MASTER_KEY, child.encrypted_json);
-  const infra = masterCloudflareInfra(env);
+  const masterInfra = masterCloudflareInfra(env);
+  const infra = stored.cloudflare_account_id && stored.cloudflare_api_token ? {
+    cloudflare_account_id: stored.cloudflare_account_id,
+    cloudflare_api_token: stored.cloudflare_api_token
+  } : masterInfra;
   const childInfra = {
     cloudinary_cloud_name: stored.cloudinary_cloud_name,
     cloudinary_api_key: stored.cloudinary_api_key,
     cloudinary_api_secret: stored.cloudinary_api_secret
   };
   const childSecret = String(stored.child_secret || randomHex(32));
-  const workerName = child.worker_name || ("xm-" + child.slug + "-" + child.id.slice(-6)).slice(0, 62);
+  const oldHost = child.web_url ? new URL(child.web_url).hostname : "";
+  const workerName = child.worker_name || (oldHost.endsWith(".workers.dev") ? oldHost.split(".")[0] : null);
+  if (!workerName) throw Object.assign(new Error("child_worker_identity_missing"), { status: 409 });
   const masterRoot = new URL(request.url).origin;
   const source = renderChildWorkerSource();
   const metadata = {
@@ -1932,83 +1800,50 @@ async function updateChildWorkerCode(env, request, admin, childId) {
       { type: "plain_text", name: "CHILD_ID", text: child.id },
       { type: "plain_text", name: "MASTER_ROOT", text: masterRoot },
       { type: "secret_text", name: "CHILD_SECRET", text: childSecret },
-      { type: "service", name: "MASTER", service: "x-master-router" }
+      ...(infra.cloudflare_account_id === masterInfra.cloudflare_account_id
+        ? [{ type: "service", name: "MASTER", service: env.CF_MASTER_WORKER || "x-master-router" }]
+        : [])
     ]
   };
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }), "metadata.json");
   form.append("worker.js", new Blob([source], { type: "application/javascript+module" }), "worker.js");
 
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName), {
     method: "PUT",
     body: form
   });
-  await cloudflareRequest(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
+  await requestCF(infra, "/workers/scripts/" + encodeURIComponent(workerName) + "/subdomain", {
     method: "POST",
     body: JSON.stringify({ enabled: true })
   });
 
-  const subdomain = await ensureWorkersSubdomain(infra);
+  const subdomain = await ensureWorkersSubdomain(infra, requestCF);
   const webUrl = "https://" + workerName + "." + subdomain + ".workers.dev";
   const secretHash = await hmacHex(env.SESSION_PEPPER, childSecret);
-  const legacyCloudflare = (
-    stored.cloudflare_account_id && stored.cloudflare_api_token
-      ? {
-          cloudflare_account_id: stored.cloudflare_account_id,
-          cloudflare_api_token: stored.cloudflare_api_token
-        }
-      : {}
-  );
-  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...childInfra, ...legacyCloudflare, child_secret: childSecret });
+  const updatedInfra = await encryptJson(env.MASTER_KEY, { ...stored, ...childInfra, child_secret: childSecret });
 
+  await requestCF.assertLease();
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE children SET child_secret_hash=?,worker_name=?,web_url=?,status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
+      "UPDATE children SET child_secret_hash=?,worker_name=?,web_url=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
     ).bind(secretHash, workerName, webUrl, childId),
     env.DB.prepare(
       "UPDATE child_infra SET encrypted_json=?,updated_at=CURRENT_TIMESTAMP WHERE child_id=?"
     ).bind(updatedInfra, childId)
   ]);
 
-  await env.DB.prepare(
-    "UPDATE children SET status='ready',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?"
-  ).bind(childId).run();
-  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot, true);
+  const routerSlots = await ensureChildRouterSlots(env, { id: childId, name: child.name, slug: child.slug }, masterRoot, true, requestCF);
   await audit(env, "admin", admin.id, "child.code_updated", "child", childId, {
     worker_name: workerName,
     web_url: webUrl,
     router_slots: routerSlots.length
   });
-  return { updated: true, child: { id: childId, name: child.name, status: "ready", worker_name: workerName, web_url: webUrl, router_slots: routerSlots } };
+  return { updated: true, child: { id: childId, name: child.name, status: child.status, worker_name: workerName, web_url: webUrl, router_slots: routerSlots } };
 }
 
 async function deleteChild(env, admin, childId) {
-  const child = await env.DB.prepare(
-    "SELECT c.*,i.encrypted_json FROM children c LEFT JOIN child_infra i ON i.child_id=c.id WHERE c.id=?"
-  ).bind(childId).first();
-  if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
-
-  const cloudflare = await manageChildWorkers(env, child, "delete");
-
-  await audit(env, "admin", admin.id, "child.workers_deleted_verified", "child", childId, {
-    name: child.name,
-    worker_name: child.worker_name,
-    cloudflare
-  });
-
-  await env.DB.prepare("DELETE FROM children WHERE id=?").bind(childId).run();
-
-  await audit(env, "admin", admin.id, "child.data_deleted", "child", childId, {
-    name: child.name,
-    worker_name: child.worker_name,
-    cloudflare_verified: true
-  }).catch(() => {});
-
-  return {
-    deleted: true,
-    cloudflare_verified: true,
-    workers: cloudflare.results
-  };
+  return childWorkers.remove(env, admin, childId);
 }
 
 async function loadAccountSecrets(env, accountId) {
@@ -2044,6 +1879,7 @@ async function adminTestGemini(env, admin, accountId) {
 
 async function adminTestFullPipeline(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
+  await assertPostingEnabled(env, accountId);
   const ai = await childAiSettings(env, account.child_id, true);
   if (!ai.deepseek_api_key) throw Object.assign(new Error("deepseek_api_key_missing_for_user"), { status: 400 });
 
@@ -2055,6 +1891,7 @@ async function adminTestFullPipeline(env, admin, accountId) {
     "X-Master full pipeline test. Rewrite this into a short X post confirming the automation connection.",
     { ...account, content_mode: mode, post_language: accountPostLanguage(secrets) }
   );
+  await assertPostingEnabled(env, accountId);
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output, []);
   await audit(env, "admin", admin.id, "x_account.pipeline_test_posted", "x_account", account.id, {
     child_id: account.child_id,
@@ -2070,6 +1907,7 @@ async function adminTestXAccount(env, admin, accountId) {
   const { account, secrets } = await loadAccountSecrets(env, accountId);
 
   const text = "X-Master connection test " + new Date().toISOString();
+  await assertPostingEnabled(env, accountId);
   const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, text);
   await audit(env, "admin", admin.id, "x_account.test_posted", "x_account", account.id, {
     buffer_post_id: post.id,
@@ -2194,6 +2032,7 @@ async function internalRouterProcess(env, request) {
     throw Object.assign(new Error("router_account_mismatch"), { status: 409 });
   }
 
+  await assertPostingEnabled(env, accountId);
   const claim = await claimRoute(env, eventId, accountId, "router_pending", "processing");
   if (claim.already_posted) return { posted: true, duplicate: true };
 
@@ -2227,6 +2066,7 @@ async function internalRouterPublish(env, request) {
     throw Object.assign(new Error("router_publish_payload_invalid"), { status: 400 });
   }
 
+  await assertPostingEnabled(env, accountId);
   const claim = await claimRoute(env, eventId, accountId, "local_ai_pending", "publishing");
   if (claim.already_posted) return { posted: true, duplicate: true };
 
@@ -2244,6 +2084,7 @@ async function internalRouterPublish(env, request) {
   if (account.encrypted_json) secrets = await decryptJson(env.MASTER_KEY, account.encrypted_json);
 
   try {
+    await assertPostingEnabled(env, accountId);
     const post = await bufferCreateNow(secrets.buffer_api_key, account.buffer_channel_id, output);
     await env.DB.prepare(
       "UPDATE ingest_account_routes SET status='posted',error=NULL WHERE event_id=? AND account_id=?"
@@ -2490,6 +2331,13 @@ async function handleApi(request, env, ctx) {
   await requireBindings(env);
   const url = new URL(request.url);
   const path = url.pathname;
+  if (path.startsWith("/api/admin/") && !["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+    const origin = request.headers.get("origin");
+    if (origin && origin !== url.origin) throw Object.assign(new Error("cross_origin_admin_request"), { status: 403 });
+    if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+      throw Object.assign(new Error("application_json_required"), { status: 415 });
+    }
+  }
 
   if (path === "/collector/sources" && request.method === "GET") {
     await requireCollector(env, request);
@@ -2521,7 +2369,7 @@ async function handleApi(request, env, ctx) {
     return json({
       ok: database,
       service: "x-master-router",
-      version: "0.4.0",
+      version: "0.5.0",
       database,
       architecture: "master-user-web-five-account-routers",
       collector_ready: Boolean(env.COLLECTOR_SECRET),
@@ -2558,9 +2406,13 @@ async function handleApi(request, env, ctx) {
       return json({
         ok: true,
         sources: await listSources(env),
+        domains: await domains.config(env),
         children: await listChildren(env)
       });
     }
+
+    if (path === "/api/admin/domain-settings" && request.method === "GET") return json(await domains.config(env));
+    if (path === "/api/admin/domain-settings" && request.method === "PUT") return json(await domains.saveConfig(env, admin, await readJson(request)));
 
     if (path === "/api/admin/cloudflare-usage" && request.method === "GET") {
       return json(await cloudflareUsageSummary(env));
@@ -2602,13 +2454,34 @@ async function handleApi(request, env, ctx) {
       return json({ children: await listChildren(env) });
     }
 
+    const childDomainMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/sync-domain$/);
+    if (childDomainMatch && request.method === "POST") {
+      const childId = childDomainMatch[1];
+      return json(await childWorkers.withLock(env, childId, "domain", async requestCF => {
+        const child = await env.DB.prepare("SELECT slug FROM children WHERE id=?").bind(childId).first();
+        const records = await domains.rows(env, childId);
+        if (records.some(row => row.desired)) {
+          const state = await env.DB.prepare("SELECT status FROM children WHERE id=?").bind(childId).first();
+          await domains.sync(env, childId, state.status, requestCF);
+          return { domains: await domains.rows(env, childId) };
+        }
+        return domains.assign(env, admin, childId, child.slug, requestCF);
+      }));
+    }
+
+    const childCloudflareMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/cloudflare-status$/);
+    if (childCloudflareMatch && request.method === "GET") {
+      return json(await childWorkers.inspect(env, childCloudflareMatch[1]));
+    }
+
     const childRoutersMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/ensure-routers$/);
     if (childRoutersMatch && request.method === "POST") {
-      const child = await env.DB.prepare("SELECT id,name,slug FROM children WHERE id=?").bind(childRoutersMatch[1]).first();
-      if (!child) throw Object.assign(new Error("child_not_found"), { status: 404 });
-      const slots = await ensureChildRouterSlots(env, child, new URL(request.url).origin);
-      await audit(env, "admin", admin.id, "child.routers_ensured", "child", child.id, { router_slots: slots.length });
-      return json({ ok: true, router_slots: slots });
+      return json(await childWorkers.withDeployment(env, admin, childRoutersMatch[1], "ensure_routers", async requestCF => {
+        const child = await env.DB.prepare("SELECT id,name,slug FROM children WHERE id=?").bind(childRoutersMatch[1]).first();
+        const slots = await ensureChildRouterSlots(env, child, new URL(request.url).origin, false, requestCF);
+        await audit(env, "admin", admin.id, "child.routers_ensured", "child", child.id, { router_slots: slots.length });
+        return { ok: true, router_slots: slots };
+      }));
     }
 
     const childCodeMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/update-code$/);
@@ -2622,6 +2495,18 @@ async function handleApi(request, env, ctx) {
     }
     if (childMatch && request.method === "DELETE") {
       return json(await deleteChild(env, admin, childMatch[1]));
+    }
+
+    const adminAccountMatch = path.match(/^\/api\/admin\/children\/([^/]+)\/accounts\/([^/]+)$/);
+    if (adminAccountMatch && request.method === "PATCH") {
+      const [, childId, accountId] = adminAccountMatch;
+      const body = await readJson(request);
+      return json(await childWorkers.withLock(env, childId, "edit_account", async () => {
+        const child = await env.DB.prepare("SELECT id,name FROM children WHERE id=?").bind(childId).first();
+        const current = (await listXAccounts(env, childId)).find(a => a.id === accountId);
+        if (!current) throw Object.assign(new Error("x_account_not_found"), { status: 404 });
+        return saveXAccount(env, child, { ...current, ...body }, accountId, { type: "admin", id: admin.id });
+      }));
     }
 
     const adminGeminiMatch = path.match(/^\/api\/admin\/accounts\/([^/]+)\/test-gemini$/);
@@ -2666,7 +2551,7 @@ async function handleApi(request, env, ctx) {
       return json({ ok: true, child_id: child.id, status: child.status });
     }
 
-    if (child.status === "paused") throw Object.assign(new Error("child_paused"), { status: 403 });
+    if (child.status !== "ready") throw Object.assign(new Error(child.status === "paused" ? "child_paused" : "child_not_ready:" + child.status), { status: 403 });
 
     if (path === "/internal/child/login" && request.method === "POST") {
       const body = await readJson(request);
@@ -2724,9 +2609,6 @@ export const __test = {
   accountRouterWorkerName,
   deployAccountRouterWorker,
   cloudflareUsageSummary,
-  cloudflareWorkerProbe,
-  setCloudflareWorkerEnabled,
-  deleteCloudflareWorkerVerified,
   rewritePrompt,
   cleanAiOutput,
   xWeightedLength,
@@ -2734,7 +2616,18 @@ export const __test = {
   geminiRewrite,
   deepseekRewrite,
   bufferCreateNow,
-  uploadCloudinaryImage
+  uploadCloudinaryImage,
+  cloudflareRequest,
+  childWorkers,
+  domains,
+  createChild,
+  updateChild,
+  processAccountRoute,
+  adminTestFullPipeline,
+  adminTestXAccount,
+  internalRouterProcess,
+  internalRouterPublish,
+  updateChildWorkerCode
 };
 
 export default {
@@ -2755,3 +2648,4 @@ export default {
     }
   }
 };
+

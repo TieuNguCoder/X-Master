@@ -37,6 +37,7 @@
     <section id="app" class="hidden">
       <nav class="tabs">
         <button class="tab active" data-tab="children">User Webs</button>
+        <button class="tab" data-tab="domains">Tên miền</button>
         <button class="tab" data-tab="usage">Cloudflare Usage</button>
         <button class="tab" data-tab="sources">Telegram Catalog</button>
         <button class="tab" data-tab="audit">Logs</button>
@@ -59,6 +60,7 @@
                 </label>
               </div>
 
+              <label>Tên miền con (để trống: tự tạo theo tên web)<input id="childSubdomain" placeholder="khach01" pattern="[a-z0-9][a-z0-9-]*" maxlength="63"><small id="domainHint">Bật tự gắn miền trong mục Tên miền.</small></label>
               <div class="status">Cloudflare: dùng key trung tâm của Master Router, không cần nhập lại.</div>
 
               <fieldset>
@@ -99,9 +101,24 @@
               <div class="eyebrow">USER WEBS</div>
               <h2>User Web + Router đang quản lý</h2>
             </div>
-            <button id="refreshBtn" class="ghost">Refresh</button>
+            <div class="button-row"><button id="upgradeAllBtn" class="secondary">Cập nhật web cũ + gắn miền</button><button id="refreshBtn" class="ghost">Refresh</button></div>
           </div>
+          <div id="upgradeStatus" class="status"></div>
           <div id="childrenList" class="cards"></div>
+        </article>
+      </section>
+
+      <section id="tab-domains" class="tabpage hidden">
+        <article class="panel">
+          <h2>Tên miền cho User Webs</h2>
+          <p>Mỗi web con nhận một địa chỉ riêng, ví dụ khach01.bemail2017.com. Web cũ: chọn Chỉnh sửa để gắn miền. Khi xóa web, miền do Master quản lý được gỡ tự động.</p>
+          <form id="domainForm" class="stack">
+            <label><input id="domainEnabled" type="checkbox"> Tự gắn miền khi tạo web mới</label>
+            <label>Miền đã có trên Cloudflare<input id="baseDomain" value="bemail2017.com" required></label>
+            <button>Lưu và kiểm tra miền</button>
+          </form>
+          <div id="domainStatus" class="status"></div>
+          <p class="muted">Tắt tự gắn miền chỉ áp dụng cho web tạo sau đó. Miền của web đang có vẫn được giữ. Khi dừng web, miền tạm ngắt và sẽ gắn lại khi Resume. DNS/SSL có thể cần thời gian cập nhật.</p>
         </article>
       </section>
 
@@ -178,6 +195,41 @@
     </section>
   </main>
 </div>
+<dialog id="editAccountDialog" class="panel">
+  <form id="editAccountForm" class="stack">
+    <h2>Chỉnh sửa tài khoản X của web con</h2>
+    <input id="editAccountChildId" type="hidden"><input id="editAccountId" type="hidden">
+    <label>Tên tài khoản<input id="editAccountName" required minlength="2"></label>
+    <label>X username<input id="editAccountHandle"></label>
+    <label>Buffer Channel ID<input id="editAccountChannel" required></label>
+    <label>Đổi Buffer API Key<input id="editAccountBuffer" type="password" autocomplete="off" placeholder="Để trống để giữ nguyên"></label>
+    <label>Kiểu nội dung<select id="editAccountMode"><option value="both">News + Airdrop</option><option value="news">News</option><option value="airdrop">Airdrop</option></select></label>
+    <label>Ngôn ngữ bài viết<input id="editAccountLanguage" required placeholder="en-US / vi-VN"></label>
+    <label><input id="editAccountEnabled" type="checkbox"> Bật tài khoản</label>
+    <label><input id="editAccountPremium" type="checkbox"> X Premium</label>
+    <fieldset><legend>Kênh Telegram</legend><div id="editAccountSources" class="stack"></div></fieldset>
+    <div id="editAccountStatus" class="status"></div>
+    <div class="button-row"><button>Lưu tài khoản</button><button type="button" id="editAccountCancel" class="secondary">Đóng</button></div>
+  </form>
+</dialog>
+<dialog id="editChildDialog" class="panel">
+  <form id="editChildForm" class="stack">
+    <h2>Chỉnh sửa web con</h2>
+    <input id="editChildId" type="hidden">
+    <label>Tên hiển thị<input id="editChildName" required minlength="2" maxlength="120"></label>
+    <label>Gắn / đổi tên miền con<input id="editSubdomain" placeholder="Để trống để giữ miền đang có" maxlength="63"></label>
+    <div id="editDomainInfo" class="status"></div>
+    <label>Đổi DeepSeek API Key<input id="editDeepseek" type="password" autocomplete="off" placeholder="Để trống để giữ nguyên"></label>
+    <fieldset><legend>Đổi Cloudinary (điền đủ 3 ô; để trống để giữ nguyên)</legend>
+      <label>Cloud Name<input id="editCloudName" autocomplete="off"></label>
+      <label>API Key<input id="editCloudKey" autocomplete="off"></label>
+      <label>API Secret<input id="editCloudSecret" type="password" autocomplete="off"></label>
+    </fieldset>
+    <p class="muted">Đổi tên hiển thị không đổi Worker, tài khoản X hay dữ liệu đang có. Update User Web sẽ cập nhật code cho web và 5 router hiện tại.</p>
+    <div id="editStatus" class="status"></div>
+    <div class="button-row"><button>Lưu thay đổi</button><button type="button" id="editCancel" class="secondary">Đóng</button></div>
+  </form>
+</dialog>
 <div id="toast" class="toast hidden"></div>
 <script type="module" src="/app.js"></script>
 </body>

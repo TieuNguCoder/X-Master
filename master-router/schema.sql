@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS child_infra (
   FOREIGN KEY(child_id) REFERENCES children(id) ON DELETE CASCADE
 );
 
+-- Durable trigger snapshots and a lease serialize pause/resume/delete.
+CREATE TABLE IF NOT EXISTS child_lifecycle (
+  child_id TEXT PRIMARY KEY,
+  operation_id TEXT,
+  action TEXT,
+  lease_expires_at TEXT,
+  snapshots_json TEXT NOT NULL DEFAULT '{}',
+  verified_status TEXT,
+  last_error TEXT,
+  FOREIGN KEY(child_id) REFERENCES children(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS child_sources (
   child_id TEXT NOT NULL,
   source_id TEXT NOT NULL,
@@ -205,3 +217,29 @@ CREATE TABLE IF NOT EXISTS ingest_account_routes (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_account_routes_account
 ON ingest_account_routes(account_id, created_at DESC);
+
+
+-- Additive v0.5 migration: safe to reapply to existing installations.
+CREATE TABLE IF NOT EXISTS domain_settings (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  base_domain TEXT NOT NULL,
+  zone_id TEXT,
+  account_id TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS child_domains (
+  hostname TEXT PRIMARY KEY,
+  child_id TEXT NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL,
+  zone_id TEXT NOT NULL,
+  worker_name TEXT NOT NULL,
+  workers_dev_url TEXT NOT NULL,
+  domain_id TEXT,
+  desired INTEGER NOT NULL DEFAULT 0 CHECK(desired IN (0,1)),
+  state TEXT NOT NULL DEFAULT 'pending',
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_child_domains_child ON child_domains(child_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_child_domain_canonical ON child_domains(child_id) WHERE desired=1;

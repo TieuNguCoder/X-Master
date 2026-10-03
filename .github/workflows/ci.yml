@@ -32,6 +32,12 @@ jobs:
       - name: Provisioning regressions
         run: node test/provisioning-regression.test.mjs
 
+      - name: Cloudflare Worker lifecycle
+        run: node test/worker-lifecycle.test.mjs
+
+      - name: Child domains and existing User upgrades
+        run: node test/child-domains.test.mjs
+
       - name: Render and syntax-check Child Worker
         working-directory: .
         run: |
@@ -178,3 +184,4 @@ jobs:
           fi
 
           node ../tools/account-router-live-smoke.mjs
+

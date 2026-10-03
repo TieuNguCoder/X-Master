@@ -266,7 +266,7 @@ try {
   Log "7/8" "Save local deployment result"
   $state = [ordered]@{
     ok = $true
-    version = "0.4.0"
+    version = "0.5.0"
     master_root = $rootUrl
     master_web = $rootUrl + "/"
     d1_database_id = $dbId
@@ -292,3 +292,4 @@ finally {
   Remove-Item Env:FORCE_COLOR -ErrorAction SilentlyContinue
   Remove-Item Env:TERM -ErrorAction SilentlyContinue
 }
+

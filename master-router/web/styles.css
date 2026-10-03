@@ -29,3 +29,8 @@ fieldset{border:1px solid #263b59;border-radius:12px;padding:13px}legend{padding
 .usage-warning{margin-top:14px;border:1px solid #6a5120;background:#221a0d;color:#f1d18c;border-radius:12px;padding:12px;white-space:pre-wrap}
 .usage-table{display:grid;gap:8px}.usage-metric{display:grid;grid-template-columns:minmax(220px,1.8fr) minmax(110px,.8fr) minmax(90px,.6fr);gap:12px;align-items:center;border:1px solid #223650;background:#091321;border-radius:10px;padding:11px 12px}
 .usage-metric .metric-name{min-width:0}.usage-metric .metric-name small{display:block;color:#8398b6;margin-top:3px}.usage-metric .metric-value{text-align:right;font-variant-numeric:tabular-nums}.usage-product{margin-top:12px;font-weight:900;color:#b9d2f7}
+
+.lifecycle-error{color:#ffb0bd;overflow-wrap:anywhere}.child-card .status{overflow-wrap:anywhere}
+
+
+dialog.panel{max-width:620px;width:calc(100% - 40px);max-height:90vh;overflow:auto;color:inherit;background:#111827}dialog::backdrop{background:#0009}input[type=checkbox]{width:auto}

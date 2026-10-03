@@ -17,9 +17,9 @@ assert.ok(js.includes("/api/admin/cloudflare-usage"));
 assert.ok(js.includes("loadCloudflareUsage"));
 assert.ok(js.includes("Test AI"));
 assert.ok(js.includes("Test full pipeline"));
-assert.ok(js.includes("Stop Workers"));
-assert.ok(js.includes("Start Workers"));
-assert.ok(js.includes("Delete User + Workers"));
+assert.ok(js.includes("Dừng Worker"));
+assert.ok(js.includes("Resume"));
+assert.ok(js.includes("Xóa Worker + dữ liệu"));
 assert.ok(js.includes("details_json"));
 assert.ok(html.includes("Copy URL + Password"));
 assert.ok(html.includes("Tạo User Web + 5 Router"));
@@ -37,7 +37,7 @@ for (const table of [
 }
 
 assert.equal((routerSource.match(/datetime\(expires_at\) > CURRENT_TIMESTAMP/g) || []).length, 2);
-assert.ok(routerSource.includes("if (uploaded) await deleteChildWorker"));
+assert.ok(routerSource.includes("retry_required"), "failed provisioning retains a recoverable journal");
 assert.ok(routerSource.includes('new Error("password_too_short")'));
 assert.ok(routerSource.includes('new Error("x_account_limit_reached")'));
 assert.ok(routerSource.includes('path === "/collector/catalog"'));
@@ -61,11 +61,10 @@ assert.ok(routerSource.includes("CF_API_TOKEN"));
 assert.ok(routerSource.includes("/billable/usage"));
 assert.ok(routerSource.includes("cloudflareUsageSummary"));
 assert.ok(routerSource.includes("ensureChildRouterSlots"));
-assert.ok(routerSource.includes("setCloudflareWorkerEnabled"));
-assert.ok(routerSource.includes("deleteCloudflareWorkerVerified"));
-assert.ok(routerSource.includes("?force=true"));
-assert.ok(routerSource.includes("child.workers_stopped"));
-assert.ok(routerSource.includes("child.workers_deleted_verified"));
+assert.ok(routerSource.includes("childWorkers.changeStatus"));
+assert.ok(routerSource.includes("childWorkers.remove"));
+assert.ok(!routerSource.includes("?force=true"));
+assert.ok(routerSource.includes("domains.assign"));
 assert.ok(routerSource.includes("deployAccountRouterWorker"));
 assert.ok(routerSource.includes("/internal/router/process"));
 assert.ok(routerSource.includes("/internal/router/publish"));
@@ -106,8 +105,9 @@ assert.ok(childTemplate.includes("router_slot_index"));
 assert.ok(accountRouterTemplate.includes("ROUTER_SLOT_ID"));
 assert.ok(accountRouterTemplate.includes("x-router-signature"));
 assert.ok(accountRouterTemplate.includes("env.MASTER.fetch"));
-assert.ok(routerSource.includes('{ type: "service", name: "MASTER", service: "x-master-router"'));
+assert.ok(routerSource.includes('{ type: "service", name: "MASTER", service: masterWorker'));
 assert.ok(accountRouterTemplate.includes("/internal/router/process"));
 assert.ok(accountRouterTemplate.includes("/internal/router/publish"));
 
 console.log("contract.test: PASS");
+

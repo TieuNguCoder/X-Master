@@ -2,6 +2,17 @@
 
 X-Master is an automation platform built around one central **Master Router** and isolated **User Web + Account Router** Workers.
 
+## v0.5.0 — quản lý web cũ/mới và tên miền
+
+Xem **[UPGRADE-v0.5.0.md](UPGRADE-v0.5.0.md)** trước khi cập nhật bản đang chạy.
+
+- Master sửa tên web, Cloudinary, DeepSeek; sửa tài khoản X, Buffer, kênh Telegram và chế độ bài.
+- Bật tên miền tự động trên zone của Master (ví dụ `bemail2017.com`). Web mới tự có subdomain; web cũ dùng **Cập nhật web cũ + gắn miền** hoặc **Gắn / thử lại miền**.
+- Đổi subdomain có kiểm tra sở hữu; giữ tên Worker và dữ liệu user khi cập nhật.
+- Dừng Worker đồng thời tạm ngắt miền; Resume phục hồi miền. Xóa web gỡ miền do Master quản lý, xác minh xóa Worker rồi mới dọn dữ liệu.
+- Lỗi quyền/mạng giữ tiến trình để thử lại. Không dùng force-delete và không xóa Worker blog hoặc Master.
+- Mặc định tự gắn miền tắt cho tới khi Owner bật trong mục **Tên miền**.
+
 ## Product model
 
 ```text
@@ -86,6 +97,19 @@ The five account routers and the User Web are created under the **same Cloudflar
 - A later custom-domain phase can map the Master/User surfaces under `router....bemail2017.com` without changing the account-router model.
 
 ## User Web
+
+### Stop, resume and delete Workers
+
+- **Dừng Worker** blocks new posting first, then disables `workers.dev`, Preview URLs and Cron schedules on the User Web and its account routers through the Cloudflare API. Each change is read back and verified. Private settings and credentials are retained for Resume.
+- **Resume** restores the saved trigger configuration. A missing Worker or an unverified Cloudflare response keeps the User paused and shows the error. Updating code or repairing routers preserves the User's paused state and existing Worker names.
+- **Kiểm tra Cloudflare** reads the actual script, trigger and account state, including old records whose scripts no longer exist. The UI distinguishes inherited posting pauses from the last verified Cloudflare operation.
+- **Xóa Worker + dữ liệu** checks ownership of the entire group before deletion, deletes every managed script, and requires a confirmed missing-script response afterwards. Only then does one D1 transaction remove the User and its private infrastructure/settings, X accounts, router secrets, Source links, sessions and account routes. Shared Telegram catalog/events and other Users remain available; audit history is retained.
+- If deletion fails partway through, the User stays paused with its credentials and error available for retry. Missing scripts are accepted only for Cloudflare's specific HTTP 404/code 10007 response after verifying the account against its `workers.dev` URL. Permission errors, timeouts and generic 404s cannot silently remove the User record.
+- Older User Webs keep using their original encrypted Cloudflare credentials when present. Their account routers use Master's account. Updating an old User Web preserves its URL/account instead of leaving an orphan script in the previous account.
+
+Apply the updated `master-router/schema.sql` before deploying this version; `SETUP-MASTER.ps1` already applies it on every deployment. The new `child_lifecycle` table is additive. A durable lease serializes stop/resume/delete/update/repair for each User and keeps trigger snapshots across retries.
+
+Stopping blocks new Buffer requests after the posting-state check. Requests already accepted by Buffer cannot be recalled by stopping a Worker. Cloudflare trigger changes can take time to propagate, so authenticated Master posting checks also reject paused Users.
 
 Each User Web supports up to five X accounts. Every X account keeps its own:
 
@@ -248,12 +272,12 @@ This release repairs and hardens the real Windows deployment path discovered dur
 - ANSI/UTF-8 deploy output is cleaned for the Windows GUI;
 - D1 IDs accept Wrangler's `uuid`, `id`, or `database_id` fields;
 - new Cloudflare accounts can create their workers.dev subdomain;
-- failed Child health checks delete the uploaded Child Worker;
+- v0.5 retains partially provisioned Workers and credentials for verified retry/deletion;
 - session expiry uses SQLite datetime parsing instead of raw text comparison;
 - encrypted Gemini/Buffer settings are never silently overwritten after a decrypt failure;
 - deployment health failures report the last real error.
 
-## v0.1.0 owner workflow
+## Historical v0.1.0 owner workflow (superseded by v0.5 upgrade guide)
 
 1. Run `X-Master.exe`.
 2. Deploy / Update Master Router with one Cloudflare Account ID, API Token and Master Admin password.

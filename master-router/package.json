@@ -1,12 +1,13 @@
 {
   "name": "x-master-router",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/index.js && node --check src/security.js && node --check src/child-template.js && node --check src/account-router-template.js"
+    "check": "node --check src/index.js && node --check src/security.js && node --check src/child-template.js && node --check src/account-router-template.js && node --check src/child-domains.js && node --check src/worker-lifecycle.js && node --check src/child-lifecycle.js && node --check web/app.js"
   },
   "devDependencies": {
     "wrangler": "4.131.2"
   }
 }
+
